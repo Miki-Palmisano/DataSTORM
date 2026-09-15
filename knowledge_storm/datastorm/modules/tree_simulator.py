@@ -715,6 +715,7 @@ class TreeSimulator(dspy.Module):
         """
         Rerank the nodes by feeding in a list to an LLM.
         """
+        nodes = list(nodes) # node as set type, explicit casting
         llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
         
         listwise_llm_rerank_input = {

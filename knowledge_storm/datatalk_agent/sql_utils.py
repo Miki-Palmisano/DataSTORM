@@ -177,10 +177,22 @@ async def execute_sql(
                         database=database_name,
                     )
             else:
+                conn_kwargs = {}
+                if db_secrets_file and os.path.exists(db_secrets_file):
+                    import json as _json
+                    with open(db_secrets_file) as f:
+                        secrets = _json.load(f)
+                    conn_kwargs = {
+                        "host": secrets.get("host"),
+                        "port": secrets.get("port"),
+                        "user": secrets.get("user"),
+                        "password": secrets.get("password"),
+                    }
                 results, column_names = execute_sql_with_column_info(
                     apply_auto_limit(sql, limit_query=limit_query),
                     database=database_name,
-                    unprotected=True
+                    unprotected=True,
+                    **conn_kwargs,
                 )
                 column_names = list(map(lambda x:x[0], column_names))
             status = None

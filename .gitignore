@@ -38,3 +38,6 @@ results/acled/
 # eval/deep_research_bench_evaluator/references/README.md
 eval/deep_research_bench_evaluator/references/*.md
 !eval/deep_research_bench_evaluator/references/README.md
+
+# Local docker setup
+docker_setup/

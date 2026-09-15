@@ -149,6 +149,7 @@ class DatatalkParser(BaseParser):
         self.runnable = initialize_state | DatatalkParser.compiled_graph
         self.database_name = database_name
         self.langfuse_readonly = langfuse_readonly
+        self.db_secrets_file = db_secrets_file
         
     
     @classmethod

@@ -1,3 +1,5 @@
+import threading
+
 import requests
 import os
 from typing import List, Tuple, Union, Optional, Dict, Literal
@@ -104,6 +106,8 @@ def get_text_embeddings(
         embedding_model = AzureOpenAIEmbeddingModel()
     elif encoder_type == encoder_type == "together":
         embedding_model = TogetherEmbeddingModel()
+    elif encoder_type and encoder_type == "local":
+        embedding_model = LocalEmbeddingModel()
     else:
         raise Exception(
             "No valid encoder type is provided. Check <repo root>/secrets.toml for the field ENCODER_API_TYPE"
@@ -146,3 +150,14 @@ def get_text_embeddings(
     embeddings = [result[1] for result in embeddings]
 
     return np.array(embeddings), total_tokens
+
+class LocalEmbeddingModel(EmbeddingModel):
+    def __init__(self, model: str = "all-MiniLM-L6-v2"):
+        from sentence_transformers import SentenceTransformer
+        self._model = SentenceTransformer(model, device="cpu")
+        self._lock = threading.Lock()
+
+    def get_embedding(self, text: str) -> Tuple[np.ndarray, int]:
+        with self._lock:
+            embedding = self._model.encode(text, convert_to_numpy=True)
+        return embedding, 0

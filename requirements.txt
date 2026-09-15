@@ -14,6 +14,7 @@ json_repair>=0.28.3
 aiocache>=0.12.3
 redis>=5.2,<5.3           # optional entity-linking cache; absent is fine
 docker>=7.0               # only needed with --enable_python
+tabulate
 
 # --- Data & analysis ---
 numpy>=1.26,<1.27

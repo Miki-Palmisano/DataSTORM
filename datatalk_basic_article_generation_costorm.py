@@ -126,7 +126,7 @@ openai_kwargs = {
 # gpt-4o is no longer served by the genie proxy ("no healthy deployments for
 # this model"); gpt-5 matches the datastorm_main_model default. OpenAIModel
 # strips the params gpt-5 rejects, so top_p above is ignored for this model.
-gpt_4 = OpenAIModel(model='gpt-5', max_tokens=3000, **openai_kwargs)
+gpt_4 = OpenAIModel(model='gpt-5.1', max_tokens=3000, **openai_kwargs)
 
 def init_co_storm(topic: str,
                   retriever: str,
@@ -150,7 +150,7 @@ def init_co_storm(topic: str,
     }
     ModelClass = OpenAIModel if os.getenv('OPENAI_API_TYPE') == 'openai' else AzureOpenAIModel
     # If you are using Azure service, make sure the model name matches your own deployed model name.
-    gpt_4o_model_name = 'gpt-5'
+    gpt_4o_model_name = 'gpt-5.1'
     if os.getenv('OPENAI_API_TYPE') == 'azure':
         openai_kwargs['api_base'] = os.getenv('AZURE_API_BASE')
         openai_kwargs['api_version'] = os.getenv('AZURE_API_VERSION')
@@ -372,7 +372,25 @@ def load_dataset_descriptions(base_path=None):
     return descriptions
 
 db_description_mapping = {
-    "acled": "You have access to an ACLED database. Armed Conflict Location & Event Data (ACLED) is a non-profit organization specializing in disaggregated conflict data collection, analysis, and crisis mapping. ACLED codes the dates, actors, locations, fatalities, and types of all reported political violence and demonstration events around the world in real time. We have data up to and until end of 2024.",
+    "acled": (
+        "You have access to a PostgreSQL database with ONE table named 'events'. "
+        "This table contains WEEKLY AGGREGATED conflict event data, "
+        "NOT individual event-level rows. Columns:\n"
+        "- week (data): ISO week start date for the aggregation bucket\n"
+        "- region (text): geographic region\n"
+        "- country (text): country name, e.g. 'Colombia'\n"
+        "- admin1 (text): first-level administrative division (department)\n"
+        "- event_type (text): category of event\n"
+        "- sub_event_type (text): sub-category of event\n"
+        "- events (bigint): COUNT of events in this aggregation bucket (not a table name)\n"
+        "- fatalities (bigint): total fatality count in this bucket\n"
+        "- population_exposure (double precision): estimated population exposed\n"
+        "- disorder_type (text): type of disorder/conflict\n"
+        "- id (bigint): primary key\n"
+        "- centroid_latitude (double precision), centroid_longitude (double precision): geographic centroid\n"
+        "Always query the table as 'events', never 'acled_events'. Use 'week' for date filtering, "
+        "not 'event_date' (which does not exist)."
+    ),
     "fec": "You have access to an FEC database storing campaign finance data.",
     "insight_bench/insight_bench_1": "The dataset comprises 500 entries simulating ServiceNow incidents table, detailing various attributes such as category, state, open and close dates, involved personnel, and incident specifics like location, description, and priority. It captures incident management activities with fields like 'opened_at', 'closed_at', 'assigned_to', 'short_description', and 'priority', reflecting the operational handling and urgency of issues across different locations and categories.",
     "sf_311": "You have access to a 311 database storing service requests from the City of San Francisco. The database contains information about various service requests, including the type of request, the location of the request, the status of the request, and the date of the request."

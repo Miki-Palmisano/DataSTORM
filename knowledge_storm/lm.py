@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import random
@@ -9,6 +10,7 @@ import backoff
 import dspy
 import requests
 from dsp import ERRORS, backoff_hdlr, giveup_hdlr
+from dsp.modules.azure_openai import chat_request, completions_request
 from dsp.modules.hf import openai_to_hf
 from dsp.modules.hf_client import send_hftgi_request_v01_wrapped
 from openai import OpenAI
@@ -42,6 +44,7 @@ class OpenAIModel(dspy.OpenAI):
                 self.kwargs.pop(unsupported, None)
             self.kwargs["temperature"] = 1.0
         self._token_usage_lock = threading.Lock()
+        self._kwargs_swap_lock = threading.Lock()
         self.prompt_tokens = 0
         self.completion_tokens = 0
 
@@ -235,9 +238,42 @@ class AzureOpenAIModel(dspy.AzureOpenAI):
             model_type=model_type,
             **kwargs,
         )
+        self._is_gpt5 = bool(re.search(r"(^|/|-)gpt-5", model or ""))
+        if self._is_gpt5:
+            for unsupported in ("top_p", "presence_penalty", "frequency_penalty"):
+                self.kwargs.pop(unsupported, None)
+            self.kwargs["temperature"] = 1.0
+            # max_tokens resta qui, invariato, per sempre — nessuna mutazione a runtime.
         self._token_usage_lock = threading.Lock()
+        self._kwargs_swap_lock = threading.Lock()
         self.prompt_tokens = 0
         self.completion_tokens = 0
+
+    def basic_request(self, prompt: str, **kwargs):
+        if not self._is_gpt5:
+            return super().basic_request(prompt, **kwargs)
+
+        raw_kwargs = kwargs
+        merged = {**self.kwargs, **kwargs}  # sola LETTURA di self.kwargs, nessuna mutazione
+        if "max_tokens" in merged:
+            merged["max_completion_tokens"] = merged.pop("max_tokens")
+
+        if self.model_type == "chat":
+            messages = [{"role": "user", "content": prompt}]
+            if self.system_prompt:
+                messages.insert(0, {"role": "system", "content": self.system_prompt})
+            merged["messages"] = messages
+            call_kwargs = {"stringify_request": json.dumps(merged)}
+            response = chat_request(self.client, **call_kwargs)
+        else:
+            merged["prompt"] = prompt
+            response = completions_request(self.client, **merged)
+
+        self.history.append({
+            "prompt": prompt, "response": response,
+            "kwargs": merged, "raw_kwargs": raw_kwargs,
+        })
+        return response
 
     def log_usage(self, response):
         """Log the total tokens from the OpenAI API response.
