@@ -87,7 +87,7 @@ def retrieve_relevant_domain_specific_instructions(
                 raise ValueError()
     return res
 
-cache_entity_linking = RedisLLMCacheEntityLinking(redis_url="redis://localhost:6379", ttl=3600)
+cache_entity_linking = RedisLLMCacheEntityLinking(redis_url="redis://redis:6379", ttl=3600)
 
 class DatatalkParser(BaseParser):
     def __init__(

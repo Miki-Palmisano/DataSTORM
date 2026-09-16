@@ -17,10 +17,10 @@ docker>=7.0               # only needed with --enable_python
 tabulate
 
 # --- Data & analysis ---
-numpy>=1.26,<1.27
+numpy==1.26.4
 pandas>=2.2,<2.3
-scipy>=1.15,<1.16
-scikit-learn>=1.6,<1.7
+scipy==1.14.1
+scikit-learn==1.6.1
 matplotlib>=3.8
 transformers>=4.47,<4.48
 sentence-transformers>=3.3,<3.4   # pulls in a compatible torch

@@ -22,6 +22,8 @@ prompt_logs.jsonl
 _suql_error_log.txt
 debug_logs*.log
 
+.dockerignore
+
 # Local domain data (see README: "Per-domain data")
 datatalk_domains/
 

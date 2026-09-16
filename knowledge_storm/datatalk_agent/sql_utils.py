@@ -48,7 +48,7 @@ if SUQL_API_KEY:
 caches.set_config({
     'default': {
         'cache': "aiocache.RedisCache",
-        'endpoint': "localhost",
+        'endpoint': "redis",
         'port': 6379,
         'serializer': {
             'class': "aiocache.serializers.JsonSerializer"

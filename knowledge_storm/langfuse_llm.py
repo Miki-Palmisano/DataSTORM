@@ -87,7 +87,7 @@ async def get_redis_client() -> Optional[redis.Redis]:
     if _redis_client is None:
         try:
             _redis_client = redis.Redis(
-                host="localhost",
+                host="redis",
                 port=6379,
                 decode_responses=True,
                 socket_connect_timeout=1,

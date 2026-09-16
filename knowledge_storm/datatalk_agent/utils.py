@@ -153,7 +153,7 @@ class RedisLLMCacheEntityLinking:
             cls._instance = super(RedisLLMCacheEntityLinking, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, redis_url="redis://localhost:6379", ttl=3600):
+    def __init__(self, redis_url="redis://redis:6379", ttl=3600):
         # Store configuration but don't create the connection yet
         RedisLLMCacheEntityLinking._redis_url = redis_url
         RedisLLMCacheEntityLinking._ttl = ttl
