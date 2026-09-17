@@ -30,6 +30,8 @@ from langchain_core.rate_limiters import BaseRateLimiter
 from langchain_openai import ChatOpenAI
 import os
 
+from langfuse.langchain import CallbackHandler
+
 from knowledge_storm.utils import load_api_key
 current_dir = os.path.dirname(os.path.abspath(__file__))
 secrets_path = os.path.join(current_dir, '..', 'secrets.toml')
@@ -72,6 +74,28 @@ M = TypeVar("M", bound=BaseModel)
 
 # Redis client for caching
 _redis_client: Optional[redis.Redis] = None
+
+_langfuse_handler: Optional[CallbackHandler] = None
+
+
+def _get_langfuse_callbacks() -> list[Any]:
+    """
+    Restituisce il callback Langfuse se le credenziali sono configurate.
+    In caso contrario non interrompe le chiamate LLM.
+    """
+    global _langfuse_handler
+
+    if not (
+        os.getenv("LANGFUSE_PUBLIC_KEY")
+        and os.getenv("LANGFUSE_SECRET_KEY")
+        and os.getenv("LANGFUSE_HOST")
+    ):
+        return []
+
+    if _langfuse_handler is None:
+        _langfuse_handler = CallbackHandler()
+
+    return [_langfuse_handler]
 
 
 async def get_redis_client() -> Optional[redis.Redis]:
@@ -518,7 +542,7 @@ async def call_llm_with_structured_output(
 
                     llm_with_tools = llm.bind_tools(tools, tool_choice=force_tool_first_turn)
                     # Disable LangChain's internal cache and callbacks for this call; we manage caching ourselves and avoid tracer serialization issues.
-                    first_ai = await llm_with_tools.ainvoke(base_messages, config={"cache": False, "callbacks": []})
+                    first_ai = await llm_with_tools.ainvoke(base_messages, config={ "cache": False, "callbacks": _get_langfuse_callbacks(), })
                     if not isinstance(first_ai, AIMessage):
                         logger.error(f"Expected AIMessage on first turn for {context_desc}")
                         return None
@@ -542,7 +566,7 @@ async def call_llm_with_structured_output(
                         return None
 
                 # Disable LangChain's internal cache and callbacks for this call; we manage caching ourselves and avoid tracer serialization issues.
-                llm_result = await runner.ainvoke(messages, config={"cache": False, "callbacks": []})
+                llm_result = await runner.ainvoke(messages, config={"cache": False, "callbacks": _get_langfuse_callbacks(),})
 
                 # Convert dict result to Pydantic model if needed
                 result = output_class.model_validate(llm_result) if isinstance(llm_result, dict) else llm_result

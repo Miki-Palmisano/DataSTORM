@@ -398,7 +398,7 @@ async def run_single_message(
             callbacks=callbacks,
             tags=[semantic_parser_class.database_name],
         ),
-        version="v1",
+        version="v2",
     ):
         if (
             chunk["name"] in [
