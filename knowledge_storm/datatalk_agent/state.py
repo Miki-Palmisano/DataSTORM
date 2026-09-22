@@ -5,6 +5,7 @@ import operator
 import re
 from collections import defaultdict
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
+import numpy as np
 
 import pandas as pd
 
@@ -300,6 +301,90 @@ class SqlQuery:
             self.execution_result_full_dict = execution_result
             self.result_count = len(execution_result)
 
+    def _detect_time_column(self, df):
+        """Cerca una colonna che sia plausibilmente temporale/ordinabile."""
+        for col in df.columns:
+            if col.lower() in ("week", "date", "event_date", "period", "month"):
+                try:
+                    pd.to_datetime(df[col])
+                    return col
+                except Exception:
+                    continue
+        return None
+
+    def _compute_time_series_stats(self, df, time_col, value_col):
+        ts = df[[time_col, value_col]].dropna().copy()
+        ts[time_col] = pd.to_datetime(ts[time_col])
+        ts = ts.sort_values(time_col)
+
+        if len(ts) < 3:
+            return None
+
+        y = ts[value_col].values
+        x = np.arange(len(y))
+
+        stats = {}
+
+        # --- Pendenza (trend lineare) ---
+        slope, intercept = np.polyfit(x, y, 1)
+        stats["linear_trend_slope"] = round(float(slope), 4)
+        stats["trend_direction"] = "increasing" if slope > 0 else "decreasing" if slope < 0 else "flat"
+
+        # --- Variazione percentuale inizio -> fine ---
+        first_val, last_val = y[0], y[-1]
+        if first_val != 0:
+            pct_change = ((last_val - first_val) / abs(first_val)) * 100
+            stats["pct_change_first_to_last"] = f"{round(pct_change, 1)}%"
+
+        # --- Confronto prima metà vs seconda metà (change-in-level grezzo) ---
+        mid = len(y) // 2
+        first_half_mean = float(np.mean(y[:mid])) if mid > 0 else None
+        second_half_mean = float(np.mean(y[mid:])) if len(y) - mid > 0 else None
+        stats["first_half_mean"] = first_half_mean
+        stats["second_half_mean"] = second_half_mean
+
+        # --- Coefficiente di variazione (stabilità vs volatilità) ---
+        mean_y = np.mean(y)
+        if mean_y != 0:
+            stats["coefficient_of_variation"] = round(float(np.std(y) / abs(mean_y)), 3)
+
+        # --- Test di Mann-Kendall per trend monotono (non richiede normalità) ---
+        try:
+            from scipy.stats import kendalltau
+            tau, p_value = kendalltau(x, y)
+            stats["mann_kendall_tau"] = round(float(tau), 3)
+            stats["mann_kendall_p_value"] = round(float(p_value), 4)
+            stats["trend_significant"] = bool(p_value < 0.05)
+        except Exception:
+            pass
+
+        # --- Massimo/minimo con la loro POSIZIONE temporale (non solo il valore) ---
+        max_idx, min_idx = int(np.argmax(y)), int(np.argmin(y))
+        stats["max_value_at"] = str(ts.iloc[max_idx][time_col].date())
+        stats["min_value_at"] = str(ts.iloc[min_idx][time_col].date())
+
+        # --- Rottura strutturale semplice: differenza tra prima/seconda metà è "anomala"? ---
+        if first_half_mean is not None and second_half_mean is not None and np.std(y) > 0:
+            z_shift = (second_half_mean - first_half_mean) / np.std(y)
+            stats["level_shift_zscore"] = round(float(z_shift), 2)
+
+        # --- Numero di "run" consecutivi crescenti/decrescenti più lungo ---
+        diffs = np.diff(y)
+        max_run_up, max_run_down, cur_up, cur_down = 0, 0, 0, 0
+        for d in diffs:
+            if d > 0:
+                cur_up += 1
+                cur_down = 0
+            elif d < 0:
+                cur_down += 1
+                cur_up = 0
+            max_run_up = max(max_run_up, cur_up)
+            max_run_down = max(max_run_down, cur_down)
+        stats["longest_consecutive_increase"] = int(max_run_up)
+        stats["longest_consecutive_decrease"] = int(max_run_down)
+
+        return stats
+
     def get_table_summary_statistics(self):
         if self.execution_result_full_dict is None:
             return None
@@ -308,6 +393,7 @@ class SqlQuery:
             return {}
         
         df = pd.DataFrame(self.execution_result_full_dict)
+        time_col = self._detect_time_column(df)
         stats = {}
 
         def _stringify_unhashable(v):
@@ -346,6 +432,13 @@ class SqlQuery:
                         try:
                             col_stats["median"] = series.median()
                             col_stats["mean"] = series.mean()
+
+                            # --- NUOVO: se c'è una colonna temporale e questa è numerica, aggiungi trend stats ---
+                            if time_col and column != time_col and pd.api.types.is_numeric_dtype(df[column]):
+                                print("INFO: Statistics Computed")
+                                ts_stats = self._compute_time_series_stats(df, time_col, column)
+                                if ts_stats:
+                                    col_stats["time_series"] = ts_stats
                         except:
                             pass  # Skip if median/mean calculation fails
                     except:
