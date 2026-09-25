@@ -312,78 +312,387 @@ class SqlQuery:
                     continue
         return None
 
-    def _compute_time_series_stats(self, df, time_col, value_col):
-        ts = df[[time_col, value_col]].dropna().copy()
-        ts[time_col] = pd.to_datetime(ts[time_col])
-        ts = ts.sort_values(time_col)
-
+    def _compute_time_series_segment_stats(
+        self, ts, time_col, value_col
+    ):
+        # Calcola le statistiche su un singolo segmento
         if len(ts) < 3:
             return None
 
-        y = ts[value_col].values
-        x = np.arange(len(y))
+        ts = ts.sort_values(time_col, kind="stable")
 
-        stats = {}
+        y = ts[value_col].to_numpy(dtype=float)
+        x = (
+            (ts[time_col] - ts[time_col].iloc[0])
+            .dt.total_seconds()
+            .to_numpy(dtype=float)
+            / 86400.0
+        )
 
-        # --- Pendenza (trend lineare) ---
-        slope, intercept = np.polyfit(x, y, 1)
-        stats["linear_trend_slope"] = round(float(slope), 4)
-        stats["trend_direction"] = "increasing" if slope > 0 else "decreasing" if slope < 0 else "flat"
+        if x[-1] <= 0:
+            return None
 
-        # --- Variazione percentuale inizio -> fine ---
-        first_val, last_val = y[0], y[-1]
-        if first_val != 0:
-            pct_change = ((last_val - first_val) / abs(first_val)) * 100
-            stats["pct_change_first_to_last"] = f"{round(pct_change, 1)}%"
+        # Tolleranza contro gli errori numerici floating point
+        scale = max(1.0, float(np.max(np.abs(y))))
+        tolerance = 100 * np.finfo(float).eps * scale
+        is_constant = bool(np.ptp(y) <= tolerance)
 
-        # --- Confronto prima metà vs seconda metà (change-in-level grezzo) ---
+        if is_constant:
+            slope = 0.0
+            direction = "flat"
+        else:
+            slope = float(np.polyfit(x, y, 1)[0])
+            fitted_change = slope * (x[-1] - x[0])
+
+            if abs(fitted_change) <= tolerance:
+                direction = "flat"
+            elif slope > 0:
+                direction = "increasing"
+            else:
+                direction = "decreasing"
+
         mid = len(y) // 2
-        first_half_mean = float(np.mean(y[:mid])) if mid > 0 else None
-        second_half_mean = float(np.mean(y[mid:])) if len(y) - mid > 0 else None
-        stats["first_half_mean"] = first_half_mean
-        stats["second_half_mean"] = second_half_mean
+        first_half_mean = float(np.mean(y[:mid]))
+        second_half_mean = float(np.mean(y[mid:]))
+        mean_y = float(np.mean(y))
+        std_y = float(np.std(y))
 
-        # --- Coefficiente di variazione (stabilità vs volatilità) ---
-        mean_y = np.mean(y)
-        if mean_y != 0:
-            stats["coefficient_of_variation"] = round(float(np.std(y) / abs(mean_y)), 3)
+        stats = {
+            # Manteniamo precisione per variazioni giornaliere piccole
+            "linear_trend_slope": float(f"{slope:.10g}"),
+            "slope_unit": "value_per_day",
+            "trend_direction": direction,
+            "first_half_mean": first_half_mean,
+            "second_half_mean": second_half_mean,
+            "coefficient_of_variation": (
+                round(std_y / abs(mean_y), 3)
+                if abs(mean_y) > tolerance
+                else None
+            ),
+        }
 
-        # --- Test di Mann-Kendall per trend monotono (non richiede normalità) ---
-        try:
-            from scipy.stats import kendalltau
-            tau, p_value = kendalltau(x, y)
-            stats["mann_kendall_tau"] = round(float(tau), 3)
-            stats["mann_kendall_p_value"] = round(float(p_value), 4)
-            stats["trend_significant"] = bool(p_value < 0.05)
-        except Exception:
-            pass
+        if y[0] != 0:
+            pct_change = (y[-1] - y[0]) / abs(y[0]) * 100
+            stats["pct_change_first_to_last"] = (
+                f"{pct_change:.1f}%"
+            )
+        else:
+            stats["pct_change_first_to_last"] = None
 
-        # --- Massimo/minimo con la loro POSIZIONE temporale (non solo il valore) ---
-        max_idx, min_idx = int(np.argmax(y)), int(np.argmin(y))
-        stats["max_value_at"] = str(ts.iloc[max_idx][time_col].date())
-        stats["min_value_at"] = str(ts.iloc[min_idx][time_col].date())
+        # Kendall tau serve a capire se la serie segue un comportamento monotono
+        stats.update({
+            "mann_kendall_tau": None,
+            "mann_kendall_p_value": None,
+            "trend_significant": None,
+            "kendall_status": "undefined_for_constant_series",
+        })
 
-        # --- Rottura strutturale semplice: differenza tra prima/seconda metà è "anomala"? ---
-        if first_half_mean is not None and second_half_mean is not None and np.std(y) > 0:
-            z_shift = (second_half_mean - first_half_mean) / np.std(y)
-            stats["level_shift_zscore"] = round(float(z_shift), 2)
+        if not is_constant:
+            try:
+                from scipy.stats import kendalltau
 
-        # --- Numero di "run" consecutivi crescenti/decrescenti più lungo ---
-        diffs = np.diff(y)
-        max_run_up, max_run_down, cur_up, cur_down = 0, 0, 0, 0
-        for d in diffs:
-            if d > 0:
+                tau, p_value = kendalltau(x, y)
+
+                if np.isfinite(tau) and np.isfinite(p_value):
+                    stats.update({
+                        "mann_kendall_tau": round(float(tau), 3),
+                        "mann_kendall_p_value": float(
+                            f"{p_value:.6g}"
+                        ),
+                        "trend_significant": bool(p_value < 0.05),
+                        "kendall_status": "computed",
+                    })
+                else:
+                    stats["kendall_status"] = "undefined"
+
+            except ImportError:
+                stats["kendall_status"] = "scipy_unavailable"
+            except Exception as exc:
+                stats["kendall_status"] = "error"
+                stats["kendall_error"] = str(exc)
+
+        max_idx = int(np.argmax(y))
+        min_idx = int(np.argmin(y))
+
+        stats["max_value_at"] = str(
+            ts.iloc[max_idx][time_col].date()
+        )
+        stats["min_value_at"] = str(
+            ts.iloc[min_idx][time_col].date()
+        )
+
+        stats["level_shift_zscore"] = (
+            round(
+                (second_half_mean - first_half_mean) / std_y,
+                2,
+            )
+            if std_y > tolerance
+            else None
+        )
+
+        max_run_up = max_run_down = 0
+        cur_up = cur_down = 0
+
+        for difference in np.diff(y):
+            if difference > tolerance:
                 cur_up += 1
                 cur_down = 0
-            elif d < 0:
+            elif difference < -tolerance:
                 cur_down += 1
                 cur_up = 0
+            else:
+                # Un valore uguale interrompe entrambe le sequenze.
+                cur_up = cur_down = 0
+
             max_run_up = max(max_run_up, cur_up)
             max_run_down = max(max_run_down, cur_down)
-        stats["longest_consecutive_increase"] = int(max_run_up)
-        stats["longest_consecutive_decrease"] = int(max_run_down)
+
+        stats["longest_consecutive_increase"] = max_run_up
+        stats["longest_consecutive_decrease"] = max_run_down
+        stats["run_unit"] = "transitions_between_observations"
 
         return stats
+
+    def _choose_temporal_granularity(
+        self,
+        ts,
+        time_col,
+        *,
+        target_buckets=8,
+        max_buckets=16,
+        min_points_per_bucket=3,
+    ):
+        # Sceglie una segmentazione di calendario senza aggregare
+        candidates = [
+            ("week", "W-SUN"),
+            ("month", "M"),
+            ("quarter", "Q-DEC"),
+            ("year", "Y-DEC"),
+        ]
+
+        valid_candidates = []
+
+        for name, frequency in candidates:
+            periods = ts[time_col].dt.to_period(frequency)
+
+            # Conta timestamp distinti 
+            counts = (
+                ts.groupby(periods)[time_col]
+                .nunique()
+                .sort_index()
+            )
+
+            if counts.empty:
+                continue
+
+            # Include nel limite anche gli intervalli vuoti
+            calendar_bucket_count = (
+                counts.index[-1].ordinal
+                - counts.index[0].ordinal
+                + 1
+            )
+
+            if not 2 <= calendar_bucket_count <= max_buckets:
+                continue
+
+            if float(counts.median()) < min_points_per_bucket:
+                continue
+
+            # Richiediamo almeno due segmenti analizzabili
+            usable_buckets = int(
+                (counts >= min_points_per_bucket).sum()
+            )
+            if usable_buckets < 2:
+                continue
+
+            distance = abs(calendar_bucket_count - target_buckets)
+
+            valid_candidates.append(
+                (distance, name, frequency)
+            )
+
+        if not valid_candidates:
+            return None
+
+        # Il sort stabile favorisce la granularità più fine quando la distanza dal target è uguale
+        valid_candidates.sort(key=lambda item: item[0])
+        _, name, frequency = valid_candidates[0]
+
+        return {"name": name, "frequency": frequency}
+
+    def _compute_time_series_stats(self, df, time_col, value_col):
+        """Statistiche globali e segmentazione temporale adattiva."""
+        target_buckets = 8
+        max_buckets = 16
+        min_points_per_bucket = 3
+
+        result = {
+            "status": "insufficient_observations",
+            "time_column": time_col,
+            "value_column": value_col,
+            "n_input_rows": len(df),
+            "n_observations": 0,
+            "n_discarded_rows": 0,
+            "summary_granularity": None,
+            "intervals": [],
+        }
+
+        try:
+            ts = df[[time_col, value_col]].copy()
+
+            ts[time_col] = pd.to_datetime(
+                ts[time_col], errors="coerce"
+            )
+            ts[value_col] = pd.to_numeric(
+                ts[value_col], errors="coerce"
+            )
+            ts[value_col] = ts[value_col].replace(
+                [np.inf, -np.inf], np.nan
+            )
+
+            valid_rows = (
+                ts[time_col].notna()
+                & ts[value_col].notna()
+            )
+            result["n_discarded_rows"] = int(
+                (~valid_rows).sum()
+            )
+
+            ts = (
+                ts.loc[valid_rows]
+                .sort_values(time_col, kind="stable")
+                .reset_index(drop=True)
+            )
+
+            result["n_observations"] = len(ts)
+
+            if ts.empty:
+                return result
+
+            result["start_date"] = str(
+                ts[time_col].iloc[0].date()
+            )
+            result["end_date"] = str(
+                ts[time_col].iloc[-1].date()
+            )
+
+            duplicates = ts[time_col].duplicated(keep=False)
+
+            if duplicates.any():
+                result.update({
+                    "status": "ambiguous_series",
+                    "reason": "duplicate_timestamps",
+                    "n_rows_with_duplicate_timestamps": int(
+                        duplicates.sum()
+                    ),
+                    "suggested_action": (
+                        "Separare i gruppi o aggregare esplicitamente "
+                        "la metrica per periodo prima dell'analisi."
+                    ),
+                })
+                return result
+
+            if len(ts) < min_points_per_bucket:
+                return result
+
+            global_stats = self._compute_time_series_segment_stats(
+                ts, time_col, value_col
+            )
+            if global_stats is None:
+                return result
+
+            result.update(global_stats)
+            result["status"] = (
+                "computed_with_discarded_rows"
+                if result["n_discarded_rows"]
+                else "computed"
+            )
+
+            granularity = self._choose_temporal_granularity(
+                ts,
+                time_col,
+                target_buckets=target_buckets,
+                max_buckets=max_buckets,
+                min_points_per_bucket=min_points_per_bucket,
+            )
+
+            
+            if granularity is None:
+                result["segmentation_reason"] = (
+                    "no_suitable_granularity"
+                )
+                return result
+
+            result["summary_granularity"] = granularity["name"]
+
+            periods = ts[time_col].dt.to_period(
+                granularity["frequency"]
+            )
+            groups = dict(
+                tuple(ts.groupby(periods, sort=True))
+            )
+
+            # Conserva anche gli intervalli completamente vuoti.
+            calendar = pd.period_range(
+                start=periods.min(),
+                end=periods.max(),
+                freq=granularity["frequency"],
+            )
+
+            for period in calendar:
+                segment = groups.get(period)
+                count = len(segment) if segment is not None else 0
+
+                record = {
+                    "period": str(period),
+                    "calendar_start": str(period.start_time.date()),
+                    "calendar_end": str(period.end_time.date()),
+                    "start_date": None,
+                    "end_date": None,
+                    "n_observations": count,
+                    "status": "no_observations",
+                    "stats": None,
+                }
+
+                if count:
+                    record["start_date"] = str(
+                        segment[time_col].min().date()
+                    )
+                    record["end_date"] = str(
+                        segment[time_col].max().date()
+                    )
+
+                    if count < min_points_per_bucket:
+                        record["status"] = (
+                            "insufficient_observations"
+                        )
+                    else:
+                        record["stats"] = (
+                            self._compute_time_series_segment_stats(
+                                segment, time_col, value_col
+                            )
+                        )
+                        record["status"] = (
+                            "computed"
+                            if record["stats"] is not None
+                            else "insufficient_observations"
+                        )
+
+                result["intervals"].append(record)
+
+            
+
+            
+
+            return result
+
+        except Exception as exc:
+            # Evita che il chiamante nasconda l'errore
+            # attraverso il suo attuale `except: pass`.
+            result["status"] = "error"
+            result["error_type"] = type(exc).__name__
+            result["error"] = str(exc)
+            return result
 
     def get_table_summary_statistics(self):
         if self.execution_result_full_dict is None:
@@ -435,7 +744,6 @@ class SqlQuery:
 
                             # --- NUOVO: se c'è una colonna temporale e questa è numerica, aggiungi trend stats ---
                             if time_col and column != time_col and pd.api.types.is_numeric_dtype(df[column]):
-                                print("INFO: Statistics Computed")
                                 ts_stats = self._compute_time_series_stats(df, time_col, column)
                                 if ts_stats:
                                     col_stats["time_series"] = ts_stats
