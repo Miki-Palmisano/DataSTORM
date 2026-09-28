@@ -185,6 +185,7 @@ class TreeSimulator(dspy.Module):
         
         self.final_selected_res: List[DialogueTurn] = []
         self.failed_queries: List[dict] = []
+        self.asked_questions: set = set()  # query/SQL already asked
         # Each entry: {type, depth, selected: {thesis, research_strategy}, candidates: [...]}
         self.thesis_events: List[dict] = []
 
@@ -404,6 +405,15 @@ class TreeSimulator(dspy.Module):
         for node in nodes:
             reference_nodes.append(node.parent)
         return reference_nodes
+
+    def _register_question(self, question) -> bool:
+        """True if query/SQL is new (and register it); False if is already asked query/SQL"""
+        key = " ".join(str(question).lower().split())
+        if key in self.asked_questions:
+            print(f"  [dedupe] already done, jump: {key[:90]}")
+            return False
+        self.asked_questions.add(key)
+        return True
     
     async def expand_once(
         self,
@@ -477,6 +487,8 @@ class TreeSimulator(dspy.Module):
                     "question": user_utterance,
                     "designation": "question"
                 } for user_utterance in user_utterances]
+                for _u in user_utterances:
+                    self._register_question(_u["question"])
 
                             
             children = []
@@ -649,6 +661,12 @@ class TreeSimulator(dspy.Module):
             )
         ]
 
+        # planning has no memory of previous rounds: it discards what has already been executed
+        user_utterances = [u for u in user_utterances if self._register_question(u["question"])]
+        if not user_utterances:
+            print("  [dedupe] Nothing new question in this round")
+            return
+
         children = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=inner_expansion_max_worker) as executor:
             future_to_utterance = {
@@ -806,6 +824,17 @@ class TreeSimulator(dspy.Module):
             for i, node in enumerate(nodes)
         }
         all_new_nodes = {}
+
+        # Nodes from direct SQL ("SELECT ..." written by the planner): the QC module only performs a formal rewrite
+        # and each rewrite costs a full episode plus a summarize operation. They remain as copies without follow-up.
+        # DATASTORM_QC_ON_SQL_NODES=1 restores the previous behavior.
+        def _is_direct_sql(n) -> bool:
+            return bool(re.match(r"\s*(SELECT|WITH)\b", n.dlg_turn.user_utterance or "", re.I))
+
+        direct_sql_keys = (
+            set() if os.getenv("DATASTORM_QC_ON_SQL_NODES") == "1"
+            else {k for k, n in nodes_look_up_dict.items() if _is_direct_sql(n)}
+        )
         
         if enable_followups:
             input_json = get_reference_nodes_json()
@@ -817,6 +846,7 @@ class TreeSimulator(dspy.Module):
                         "SQL": node.dlg_turn.search_results[0].meta.get("preprocessed_sql", "N/A") if node.dlg_turn.search_results else None
                     }
                     for i, node in enumerate(nodes)
+                    if f"query{i}" not in direct_sql_keys
                 }
             )
             
@@ -850,6 +880,12 @@ class TreeSimulator(dspy.Module):
                     "skipping follow-ups for this level.", type(res).__name__
                 )
                 res = {}
+
+            # Unresolved LLM nodes (or those skipped due to direct SQL): copied without follow-up.
+            # Previously, they were silently dropped from the frontier.
+            for _k in nodes_look_up_dict:
+                if _k in direct_sql_keys or _k not in res:
+                    res[_k] = {"follow_up_question": None}
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 future_to_key = {
@@ -889,6 +925,7 @@ class TreeSimulator(dspy.Module):
                         all_new_nodes[key] = new_node
                     except Exception as e:
                         logging.error(f"Error processing node {key}: {e}")
+                        res[key] = {"follow_up_question": None}  # it falls on the copy: the node must not be lost
         else:
             # constructs a dictionary where all follow-up questions are None
             res = {
