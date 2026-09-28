@@ -25,11 +25,6 @@ import hashlib
 import json
 import os
 import pathlib
-
-DATATALK_DOMAINS_ROOT = os.getenv(
-    "DATATALK_DOMAINS_ROOT",
-    str(pathlib.Path(__file__).resolve().parent.parent.parent / "datatalk_domains"),
-)
 import urllib.parse
 from dataclasses import dataclass
 from decimal import Decimal
@@ -52,9 +47,68 @@ from knowledge_storm.datatalk_agent.state import (
     locate_last_generated_base64_image,
 )
 from knowledge_storm.datatalk_agent.utils import postprocess_entities
+from knowledge_storm.row_selection import describe_selection, select_anomalous_rows
 
 from langchain.schema.runnable.config import RunnableConfig
 from pydantic import BaseModel
+
+DATATALK_DOMAINS_ROOT = os.getenv(
+    "DATATALK_DOMAINS_ROOT",
+    str(pathlib.Path(__file__).resolve().parent.parent.parent / "datatalk_domains"),
+)
+
+# ---------------------------------------------------------------------------
+# Limiti sul risultato SQL.
+#   SQL_ROW_CAP              tetto di sicurezza sulle righe lette dal DB (memoria Python / cache Redis),
+#                            NON un filtro di dimensione per l'LLM
+#   SQL_FULL_TABLE_THRESHOLD sotto questo numero di righe la tabella non viene ridotta
+#                            (serie temporali brevi, query aggregate)
+#   SQL_ANOMALY_GROUP_BY     colonne rispetto a cui una riga è "anomala" (ignorate se assenti dal risultato)
+# ---------------------------------------------------------------------------
+SQL_ROW_CAP = int(os.getenv("DATASTORM_SQL_ROW_CAP", "500000"))
+SQL_FULL_TABLE_THRESHOLD = int(os.getenv("DATASTORM_SQL_FULL_THRESHOLD", "500"))
+SQL_ANOMALY_GROUP_BY = tuple(
+    c.strip() for c in os.getenv("DATASTORM_ANOMALY_GROUP_BY", "admin1").split(",") if c.strip()
+)
+
+
+def _cap_note() -> str:
+    return (
+        f"**Note:** The result set could be beyond {SQL_ROW_CAP:,} rows. "
+        f"The final SQL results were limited to {SQL_ROW_CAP:,} rows."
+    )
+
+
+def _result_text_for_llm(sql_query_object: Any, *, small_table_uses_sample: bool) -> Any:
+    """
+    Testo del risultato da mostrare al modello.
+
+    - risultato completo assente: execution_result_sample
+    - tabella sotto soglia (nessuna selezione): comportamento originale del chiamante
+        * small_table_uses_sample=True  -> execution_result_sample  (fast-path SQL diretto)
+        * small_table_uses_sample=False -> markdown limitato in token dell'intero risultato
+    - tabella grande: solo le righe anomale, precedute da una nota che dice al modello che NON
+      sono rappresentative (le statistiche descrittive restano calcolate sull'intero risultato)
+    """
+    full_rows = sql_query_object.execution_result_full_dict
+    if full_rows is None:
+        return sql_query_object.execution_result_sample
+
+    shown_rows, sel_info = select_anomalous_rows(
+        full_rows,
+        full_threshold=SQL_FULL_TABLE_THRESHOLD,
+        group_by=SQL_ANOMALY_GROUP_BY,
+    )
+    selection_note = describe_selection(sel_info)
+    if selection_note:
+        print(f"  [row selection] {sel_info['n_total']} -> {sel_info['n_selected']} righe "
+              f"({sel_info['method']}; misure: {sel_info['features_used']}; group_by: {sel_info['group_by']})")
+    if not selection_note:
+        if small_table_uses_sample:
+            return sql_query_object.execution_result_sample
+        return json_to_panda_markdown_token_limited(full_rows)
+
+    return selection_note + "\n\n" + json_to_panda_markdown_token_limited(shown_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +381,9 @@ async def run_single_message(
         }
 
         sql_query_object = await DatatalkParser.sql_chain(
-            message, direct_state, limit_query=" LIMIT 10000"
+            message, direct_state, limit_query=f" LIMIT {SQL_ROW_CAP}"
         )
-        sql_result = sql_query_object.execution_result_sample
+        sql_result = _result_text_for_llm(sql_query_object, small_table_uses_sample=True)
         result_count = (
             len(sql_query_object.execution_result_full_dict)
             if sql_query_object.execution_result_full_dict is not None
@@ -350,10 +404,10 @@ async def run_single_message(
                     msg_content += f"{stat}: {value}\n"
                     summary += f"{stat}: {value}\n"
 
-        if result_count >= 10000:
-            note = "**Note:** The result set could be beyond 10,000 rows. The final SQL results were limited to 10,000 rows."
-            msg_content += note
-            summary += note
+        if result_count >= SQL_ROW_CAP:
+            cap_note = _cap_note()
+            msg_content += cap_note
+            summary += cap_note
 
         if enable_chainlit:
             chainlit_msg_object.content = msg_content
@@ -491,14 +545,9 @@ async def run_single_message(
         postprocessed_sql = await postprocess_entities(postprocessed_sql, substitution_dict)
 
         sql_query_object = await DatatalkParser.sql_chain(
-            postprocessed_sql, state, limit_query=" LIMIT 10000"
+            postprocessed_sql, state, limit_query=f" LIMIT {SQL_ROW_CAP}"
         )
-        if sql_query_object.execution_result_full_dict is not None:
-            sql_result = json_to_panda_markdown_token_limited(
-                sql_query_object.execution_result_full_dict
-            )
-        else:
-            sql_result = sql_query_object.execution_result_sample
+        sql_result = _result_text_for_llm(sql_query_object, small_table_uses_sample=False)
 
         msg_content = "I attempted to answer your question by the following query\n\n"
         msg_content += f"```sql\n{postprocessed_sql}\n```\n\n"
@@ -525,10 +574,10 @@ async def run_single_message(
                         msg_content += f"{stat}: {value}\n"
                         summary += f"{stat}: {value}\n"
 
-            if result_count >= 10000:
-                note = "**Note:** The result set could be beyond 10,000 rows. The final SQL results were limited to 10,000 rows."
-                msg_content += note
-                summary += note
+            if result_count >= SQL_ROW_CAP:
+                cap_note = _cap_note()
+                msg_content += cap_note
+                summary += cap_note
 
     if enable_chainlit:
         import chainlit as cl
