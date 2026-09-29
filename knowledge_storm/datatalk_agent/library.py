@@ -102,7 +102,7 @@ def _result_text_for_llm(sql_query_object: Any, *, small_table_uses_sample: bool
     selection_note = describe_selection(sel_info)
     if selection_note:
         print(f"  [row selection] {sel_info['n_total']} -> {sel_info['n_selected']} righe "
-              f"({sel_info['method']}; misure: {sel_info['features_used']}; group_by: {sel_info['group_by']})")
+              f"(misure: {sel_info['features_used']}; group_by: {sel_info['group_by']})")
     if not selection_note:
         if small_table_uses_sample:
             return sql_query_object.execution_result_sample
@@ -613,11 +613,7 @@ async def run_single_message(
             "action_history": state["actions"],
             "entity_linking_results": state["entity_linking_results"] if preprocessed_sql else {},
             # In conversation history, surface only the preprocessed SQL.
-            "response": (
-                msg_content.replace(postprocessed_sql, preprocessed_sql)
-                if postprocessed_sql
-                else postprocessed_sql
-            ),
+            "response": summary if postprocessed_sql else postprocessed_sql,
         }
     )
 

@@ -4,6 +4,7 @@ import os
 from pydantic import BaseModel
 from typing import Union, List, Optional, Literal
 from datetime import date
+import difflib
 
 from knowledge_storm.log_utils import logger
 from langgraph.graph import END, StateGraph
@@ -86,6 +87,11 @@ def retrieve_relevant_domain_specific_instructions(
             else:
                 raise ValueError()
     return res
+
+def _is_similar_sql(a: str, b: str, threshold: float = 0.85) -> bool:
+    if not a or not b:
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= threshold
 
 cache_entity_linking = RedisLLMCacheEntityLinking(redis_url="redis://redis:6379", ttl=3600)
 
@@ -275,6 +281,7 @@ class DatatalkParser(BaseParser):
         image_dicts = []
         
         get_tables_schema_results = []
+        seen_sql_args = []
         for i, a in enumerate(actions):
             include_observation = True
             
@@ -286,6 +293,16 @@ class DatatalkParser(BaseParser):
                 "execute_sql",
             ]:
                 include_observation = False
+
+            # check if the same SQL query is already append to response
+            if a.action_name == "execute_sql" and any(_is_similar_sql(a.action_argument, s) for s in seen_sql_args):
+                action_history.append(
+                    f"Thought: {a.thought}\nAction: execute_sql(<same query as a previous action above>)\n"
+                    f"Observation: {a.observation if include_observation else 'Observation omitted due to length.'}\n"
+                )
+                continue
+            if a.action_name == "execute_sql" and a.action_argument:
+                seen_sql_args.append(a.action_argument)
                 
             # exclude get_tables_schema results that are the same
             if a.action_name == "get_tables_schema":

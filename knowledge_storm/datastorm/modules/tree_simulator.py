@@ -119,29 +119,30 @@ def construct_conv(dialogue_turns: List[DialogueTurn]):
 
 class TreeSimulator(dspy.Module):
     def __init__(
-        self,
-        topic_expert_engine: Union[dspy.dsp.LM, dspy.dsp.HFModel],
-        question_asker_engine: Union[dspy.dsp.LM, dspy.dsp.HFModel],
-        retriever: Retriever,
-        max_search_queries_per_turn: int,
-        search_top_k: int,
-        max_tree_depth = 3,
-        first_level_questions: List[str] = [], # If first_level_questions is present, set the first level questions to be these
-        each_level_population_control_num = 5,
-        max_global_insights: int = 30,
-        expansion_max_questions = 5,
-        db_description = None,
-        enable_followups = True,
-        generate_graphs = True,
-        consolidate_insights = False,
-        langfuse_readonly: bool = False,
-        internet_retriever: Optional[Retriever] = None,
-        thesis_generation_depth: int = 3,
-        thesis_refinement_interval: int = 2,
-        use_global_insight_expansion: bool = True,
-        skip_thesis: bool = False,
-        datastorm_main_model: str = "gpt-5",
-    ):
+            self,
+            topic_expert_engine: Union[dspy.dsp.LM, dspy.dsp.HFModel],
+            question_asker_engine: Union[dspy.dsp.LM, dspy.dsp.HFModel],
+            retriever: Retriever,
+            max_search_queries_per_turn: int,
+            search_top_k: int,
+            max_tree_depth = 3,
+            first_level_questions: List[str] = [], # If first_level_questions is present, set the first level questions to be these
+            each_level_population_control_num = 5,
+            max_global_insights: int = 30,
+            expansion_max_questions = 5,
+            db_description = None,
+            enable_followups = True,
+            generate_graphs = True,
+            disable_upload_to_azure=False,
+            consolidate_insights = False,
+            langfuse_readonly: bool = False,
+            internet_retriever: Optional[Retriever] = None,
+            thesis_generation_depth: int = 3,
+            thesis_refinement_interval: int = 2,
+            use_global_insight_expansion: bool = True,
+            skip_thesis: bool = False,
+            datastorm_main_model: str = "gpt-5",
+        ):
         super().__init__()
         self.datastorm_main_model = datastorm_main_model
         self.use_global_insight_expansion = use_global_insight_expansion
@@ -269,8 +270,9 @@ class TreeSimulator(dspy.Module):
             
             print(f"rerank_output: {rerank_output}")
             # Convert list of model objects to dict mapping node_id to summary (always use the node's own summary)
-            rerank_output_dict = {result.node_id: rerank_input[result.node_id] for result in rerank_output.results if result.node_id in rerank_input}
-            
+            rerank_output_dict = {result.node_id: rerank_input[result.node_id] for result in rerank_output.results if
+                result.node_id in rerank_input}
+
             # Do a round of sanity check and attempting to fix any nodes that are not found in the tree
             not_found_nodes = []
             for key in rerank_output_dict:
@@ -290,9 +292,9 @@ class TreeSimulator(dspy.Module):
                             "max_num_insights": self.max_global_insights,
                             "topic": topic,
                             "input": json.dumps(rerank_input, indent=2)
-                            + "\nYou previously selected the following nodes NOT given. The list of IDs you should NOT select include: "
-                            + ", ".join(not_found_nodes)
-                            + ".Please fix them.",
+                                     + "\nYou previously selected the following nodes NOT given. The list of IDs you should NOT select include: "
+                                     + ", ".join(not_found_nodes)
+                                     + ".Please fix them.",
                             "db_description": self.db_description,
                             "thesis": self.current_thesis,
                         },
@@ -305,7 +307,8 @@ class TreeSimulator(dspy.Module):
                         break
                     logging.warning("rerank_output was None; retrying fix rerank call...")
                 if fixed_rerank_output is not None:
-                    rerank_output_dict = {result.node_id: rerank_input[result.node_id] for result in fixed_rerank_output.results if result.node_id in rerank_input}
+                    rerank_output_dict = {result.node_id: rerank_input[result.node_id] for result in
+                        fixed_rerank_output.results if result.node_id in rerank_input}
                 else:
                     logging.error("fix rerank call returned None after retries; keeping previous rerank_output_dict")
             
@@ -980,13 +983,48 @@ class TreeSimulator(dspy.Module):
         """
         import base64
         import docker
+        import io
+        import tarfile
+        import uuid
+
+        def _put_text_file(container, remote_dir: str, filename: str, text: str) -> str:
+            data = text.encode("utf-8")
+            tar_stream = io.BytesIO()
+            with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+                info = tarfile.TarInfo(name=filename)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            tar_stream.seek(0)
+            container.put_archive(remote_dir, tar_stream)
+            return f"{remote_dir.rstrip('/')}/{filename}"
+
+        csv_file_path = node.dlg_turn.search_results[0].meta["csv_path"]
+        if not csv_file_path:
+            print(f"CSV file for {node.dlg_turn.user_utterance} does not exist")
+            return None
+
+        # The sandbox is a SEPARATE container from `app`: it does not share `app`'s
+        # filesystem, so `csv_file_path` (valid inside `app`) does not exist there.
+        # Read the bytes here, in `app`, where the file is real, and have the
+        # injected code recreate the identical file at the identical absolute path
+        # inside the sandbox before running the LLM-generated code. This way the
+        # generated code (which was told about `csv_file_path`, e.g. via
+        # pd.read_csv(csv_file_path)) works unmodified, with no dependency on the
+        # `graph_generation_matplotlib` prompt's exact wording.
+        try:
+            with open(csv_file_path, "rb") as f:
+                csv_bytes = f.read()
+        except Exception as e:
+            print(f"Could not read CSV file {csv_file_path} in app container: {e}")
+            return None
+        csv_b64 = base64.b64encode(csv_bytes).decode("ascii")
 
         llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
 
         graph_result = await call_llm_with_structured_output(
             "graph_generation_matplotlib",
             {
-                "csv_file_path": node.dlg_turn.search_results[0].meta["csv_path"],
+                "csv_file_path": csv_file_path,
                 "csv_snapshot": node.dlg_turn.search_results[0].snippets[0],
             },
             GraphGenerationResponse,
@@ -1009,7 +1047,18 @@ class TreeSimulator(dspy.Module):
             "import pandas as pd\n"
             "import warnings\n"
             "warnings.filterwarnings('ignore', '.*numpy.core.numeric.*', DeprecationWarning)\n"
+            "import os as __os\n"
             "try:\n"
+            f"    __os.makedirs(__os.path.dirname({csv_file_path!r}) or '.', exist_ok=True)\n"
+            f"    with open({csv_file_path!r}, 'wb') as __csv_f:\n"
+            f"        __csv_f.write(base64.b64decode({csv_b64!r}))\n"
+            "except Exception as __csv_err:\n"
+            "    sys.stdout.write(f'<<STORM_PLOT_ERROR>>CSV materialization failed: {__csv_err}<<END>>\\n')\n"
+            "    sys.stdout.flush()\n"
+            "    sys.exit(0)\n"
+            "try:\n"
+            "    import os, tempfile\n"
+            "    os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp(prefix='mplcache_')\n"
             "    import matplotlib\n"
             "    matplotlib.use('Agg')\n"
             "    import matplotlib.pyplot as plt\n"
@@ -1031,10 +1080,8 @@ class TreeSimulator(dspy.Module):
             "        except Exception as e:\n"
             "            sys.stdout.write(f'<<STORM_PLOT_ERROR>>{e}<<END>>\\n')\n"
             "            sys.stdout.flush()\n"
-            "    # Monkey-patch show so any plt.show() in user code triggers our emitter\n"
             "    plt.show = __storm_show\n"
             "except Exception:\n"
-            "    # If matplotlib is unavailable, proceed without hooking\n"
             "    pass\n"
             f"{python_code}\n"
         )
@@ -1043,16 +1090,12 @@ class TreeSimulator(dspy.Module):
         # Create directory for saving code and results if it doesn't exist
         os.makedirs(save_dir, exist_ok=True)
 
-        csv_file_path = node.dlg_turn.search_results[0].meta["csv_path"]
-        if not csv_file_path:
-            print(f"CSV file for {node.dlg_turn.user_utterance} does not exist")
-            return None
         execution_id = os.path.splitext(csv_file_path)[0].split("/")[-1]
 
         # Save the Python code to a file
         code_file_path = os.path.join(save_dir, f'code_matplotlib_{execution_id}.py')
         with open(code_file_path, 'w') as f:
-            f.write(f"# Associated CSV file: {node.dlg_turn.search_results[0].meta['csv_path']}\n\n")
+            f.write(f"# Associated CSV file: {csv_file_path}\n\n")
             f.write(python_code)
 
         # Execute in persistent docker container (datatalk_agent-style)
@@ -1061,12 +1104,28 @@ class TreeSimulator(dspy.Module):
             client = docker.from_env()
             container_name = "llm-sandbox-datastorm"
 
-            exec_result = client.containers.get(container_name).exec_run(
-                cmd=["python", "-c", injected_code],
-                user="sandbox",  # enforce non-root execution
-                stdout=True,
-                stderr=True
-            )
+            container = client.containers.get(container_name)
+
+            # the code come via put_archive (file), not embedding in exec_run(cmd=["python", "-c", ...]):
+            script_path = _put_text_file(container, "/tmp", f"exec_{uuid.uuid4().hex}.py", injected_code)
+            try:
+                exec_result = container.exec_run(
+                    cmd=["python", script_path],
+                    user="1000:1000",
+                    stdout=True,
+                    stderr=True,
+                    environment={
+                        "PYTHONUSERBASE": "/home/sandbox/.local",
+                        "PATH": "/home/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                        "HOME": "/home/sandbox",
+                    },
+                )
+            finally:
+                try:
+                    container.exec_run(cmd=["rm", "-f", script_path], user="1000:1000")
+                except Exception:
+                    pass
+
             output = exec_result.output.decode()
             # exec_run does not raise on non-zero exit or cgroup/OCI errors —
             # detect failure by exit code or known error patterns in the output.
@@ -1078,12 +1137,15 @@ class TreeSimulator(dspy.Module):
             print("Falling back to execute_python_script")
             # Fallback to the old method if docker fails
             res = execute_python_script(injected_code)
-            output = res["stdout"] + res["stderr"]
+            if "error" in res:
+                output = f"[sandbox fallback error: {res['error']}]"
+            else:
+                output = res.get("stdout", "") + res.get("stderr", "")
 
         # Save the output to a file
         output_file_path = os.path.join(save_dir, f'output_matplotlib_{execution_id}.txt')
         with open(output_file_path, 'w') as f:
-            f.write(f'# Associated CSV file: {node.dlg_turn.search_results[0].meta["csv_path"]}\n\n')
+            f.write(f'# Associated CSV file: {csv_file_path}\n\n')
             f.write(f"# Code executed:\n{python_code}\n\n")
             f.write(f"# Output:\n{output}")
 
@@ -1135,7 +1197,7 @@ class TreeSimulator(dspy.Module):
         """
         # Skip nodes without csv_path (e.g. internet-sourced nodes)
         if (not node.dlg_turn.search_results
-            or "csv_path" not in node.dlg_turn.search_results[0].meta):
+                or "csv_path" not in node.dlg_turn.search_results[0].meta):
             print(f"Skipping graph generation for '{node.dlg_turn.user_utterance}': no csv_path in meta")
             return None
 
@@ -1188,8 +1250,15 @@ class TreeSimulator(dspy.Module):
             f.write(python_code)
         
         res = execute_python_script(python_code)
-        output = res["stdout"] + res["stderr"]
-        
+        # Same defensive handling as the matplotlib path above: execute_python_script
+        # can return {"error": ...} without "stdout"/"stderr" (e.g. on timeout or if
+        # the throwaway docker container itself fails to start), which used to raise
+        # a bare KeyError here and abort the whole asyncio.gather in forward().
+        if "error" in res:
+            output = f"[sandbox execution error: {res['error']}]"
+        else:
+            output = res.get("stdout", "") + res.get("stderr", "")
+
         # Save the output to a file
         output_file_path = os.path.join(save_dir, f'output_{execution_id}.txt')
         with open(output_file_path, 'w') as f:
@@ -1440,18 +1509,11 @@ class TreeSimulator(dspy.Module):
                     # never given `disable_upload_to_azure`, so this path runs
                     # even when the CLI flag is set; that is why it must not be
                     # fatal.
-                    try:
-                        azure_html_file_path = upload_to_azure(html_file_path)
-                    except Exception as e:
-                        logging.warning(
-                            "upload_to_azure failed for graph %s; keeping local path. Error: %s",
-                            html_file_path,
-                            repr(e)[:200],
-                        )
-                        azure_html_file_path = html_file_path
-                    node.dlg_turn.search_results[0].meta["html_file_path"] = azure_html_file_path
-                    # node.dlg_turn.search_results[0].meta["sql_result"] += f"\n\n[Click here for visualization]({azure_html_file_path})"
+                    html_file_path = await self.generate_graph_from_node(node)
+                    if html_file_path:
+                        node.dlg_turn.search_results[0].meta["html_file_path"] = html_file_path
                 return node.dlg_turn
+
             
             # Run all visualization tasks concurrently
             tasks = [process_node(node) for node, _ in node_tasks]

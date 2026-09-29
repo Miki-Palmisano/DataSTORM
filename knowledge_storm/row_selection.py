@@ -13,8 +13,7 @@ Functionality:
     coordinates, sorting/sectioning keys like `sort_*`/`section_*`, `rank_*`);
     these describe location or identity rather than magnitude (time is handled
     via time windows, not clustering).
-  - Assigns an anomaly score to each row using IsolationForest (default method;
-    linear; validated in synthetic tests).
+  - Assigns an anomaly score to each row using IsolationForest
   - Returns only the top K most anomalous rows (default: 25), SORTED by
     descending score, including the `_anomaly_score` and a diagnostic dictionary.
   - Small tables (<= `full_threshold` rows) are passed through unchanged.
@@ -155,7 +154,7 @@ def build_feature_matrix(
 def score_anomalies(
     X: np.ndarray, random_state: int = 0
 ) -> Tuple[np.ndarray, str]:
-    """Anomaly score per row (higher = more anomalous) and the name of the method actually used."""
+    """Anomaly score per row (higher = more anomalous)"""
     n = len(X)
 
     from sklearn.ensemble import IsolationForest
@@ -165,7 +164,7 @@ def score_anomalies(
     iso = IsolationForest(
         n_estimators=100, max_samples=min(n, 10000), random_state=random_state, n_jobs=-1
     ).fit(X)
-    return -iso.score_samples(X), "isolation_forest"
+    return -iso.score_samples(X)
 
 
 def select_anomalous_rows(
@@ -175,7 +174,6 @@ def select_anomalous_rows(
     top_frac: float = 0.01,
     min_rows: int = 10,
     max_rows: int = 25,
-    method: str = "auto",
     exclude_columns: Sequence[str] = (),
     group_by: Sequence[str] = (),
     random_state: int = 0,
@@ -189,7 +187,6 @@ def select_anomalous_rows(
     info: Dict[str, Any] = {
         "n_total": n,
         "n_selected": n,
-        "method": None,
         "features_used": [],
         "features_dropped": {},
         "group_by": list(group_by),
@@ -206,12 +203,12 @@ def select_anomalous_rows(
         if X is None:
             return rows, info
 
-        scores, used_method = score_anomalies(X, method=method, random_state=random_state)
+        scores = score_anomalies(X, random_state=random_state)
         k = min(n, max_rows, max(min_rows, math.ceil(top_frac * n)))
         top_idx = np.argsort(-scores, kind="stable")[:k]  # descending score: token truncation discards the least anomalous ones
 
         selected = [{**rows[i], "_anomaly_score": round(float(scores[i]), 3)} for i in top_idx]
-        info.update(n_selected=len(selected), method=used_method, features_used=used)
+        info.update(n_selected=len(selected), features_used=used)
         return selected, info
     except Exception as e:  # noqa: BLE001
         logger.warning("selection of anomalous rows failed, using all rows: %s", e)
@@ -229,7 +226,7 @@ def describe_selection(info: Dict[str, Any]) -> str:
     )
     return (
         f"**Note:** the query returned {info['n_total']} rows. Only the {info['n_selected']} most "
-        f"anomalous rows are shown below (method: {info['method']}; measures: {used}{grouping}), "
+        f"anomalous rows are shown below ( measures: {used}{grouping}), "
         f"sorted by `_anomaly_score`, most unusual first (higher = more unusual). This is NOT a representative sample: "
         f"do not infer trends, averages or totals from these rows. Descriptive statistics computed on "
         f"all rows appear in the Summary Statistics section, when present."

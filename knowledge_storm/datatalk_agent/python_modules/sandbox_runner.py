@@ -1,3 +1,6 @@
+import tarfile
+import uuid
+
 import docker
 import io
 import base64
@@ -7,7 +10,18 @@ import pickle
 client = docker.from_env()
 
 # Your sandbox container name
-CONTAINER_NAME = "llm-sandbox"
+CONTAINER_NAME = "llm-sandbox-datastorm"
+
+def _put_text_file(container, remote_dir: str, filename: str, text: str) -> str:
+    data = text.encode("utf-8")
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        info = tarfile.TarInfo(name=filename)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    tar_stream.seek(0)
+    container.put_archive(remote_dir, tar_stream)
+    return f"{remote_dir.rstrip('/')}/{filename}"
 
 def execute_python_from_sql_results(sql_results, python_code):
     
@@ -28,6 +42,8 @@ def execute_python_from_sql_results(sql_results, python_code):
         "import warnings\n"
         "warnings.filterwarnings('ignore', '.*numpy.core.numeric.*', DeprecationWarning)\n"
         "try:\n"
+        "    import os, tempfile\n"
+        "    os.environ['MPLCONFIGDIR'] = tempfile.mkdtemp(prefix='mplcache_')\n"
         "    import matplotlib\n"
         "    matplotlib.use('Agg')\n"
         "    import matplotlib.pyplot as plt\n"
@@ -58,12 +74,24 @@ def execute_python_from_sql_results(sql_results, python_code):
         f"{python_code}"
     )
 
-    exec_result = client.containers.get(CONTAINER_NAME).exec_run(
-        cmd=["python", "-c", injected_code],
-        user="sandbox",  # enforce non-root execution
+    container = client.containers.get(CONTAINER_NAME)
+    script_path = _put_text_file(container, "/tmp", f"script_{uuid.uuid4().hex}.py", injected_code)
+
+    exec_result = container.exec_run(
+        cmd=["python", script_path],
+        user="1000:1000",
         stdout=True,
-        stderr=True
+        stderr=True,
+        environment={
+            "PYTHONUSERBASE": "/home/sandbox/.local",
+            "PATH": "/home/sandbox/.local/bin:/usr/local/bin:/usr/bin:/bin",
+            "HOME": "/home/sandbox",
+        },
     )
+    try:
+        container.exec_run(cmd=["rm", "-f", script_path], user="1000:1000")
+    except Exception:
+        pass
     return exec_result.output.decode()
 
 
