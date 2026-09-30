@@ -296,9 +296,15 @@ class DatatalkParser(BaseParser):
 
             # check if the same SQL query is already append to response
             if a.action_name == "execute_sql" and any(_is_similar_sql(a.action_argument, s) for s in seen_sql_args):
+                # same SQL (or very similar) already executed in this loop: the observation
+                # (often a huge table) has already been displayed above.
+                if a.result_count is not None and a.result_count != -1:
+                    obs_note = f"(same result as above: {a.result_count} rows)"
+                else:
+                    obs_note = "(same result as above)"
                 action_history.append(
                     f"Thought: {a.thought}\nAction: execute_sql(<same query as a previous action above>)\n"
-                    f"Observation: {a.observation if include_observation else 'Observation omitted due to length.'}\n"
+                    f"Observation: {obs_note}\n"
                 )
                 continue
             if a.action_name == "execute_sql" and a.action_argument:
