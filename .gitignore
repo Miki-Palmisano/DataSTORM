@@ -21,6 +21,7 @@ sql_results/
 prompt_logs.jsonl
 _suql_error_log.txt
 debug_logs*.log
+python_executions/
 
 .dockerignore
 

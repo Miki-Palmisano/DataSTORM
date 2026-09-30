@@ -287,17 +287,18 @@ class SqlQuery:
             # if self.sql in self.full_result_enums:
             #     self.execution_result_sample = json_to_panda_markdown(dict_result, head=-1)
             # else:
-            
-            head = 10
-            # TODO: hardcoded
+
             if "SELECT * FROM transaction_type_codes" in self.sql:
-                head = -1
-            
-            self.execution_result_sample = json_to_panda_markdown(
-                execution_result,
-                head = head,
-                processing_fcn = processing_fcn
-            )
+                self.execution_result_sample = json_to_panda_markdown(
+                    execution_result,
+                    head=-1,
+                    processing_fcn=processing_fcn
+                )
+            else:
+                self.execution_result_sample = json_to_panda_markdown_token_limited(
+                    execution_result,
+                    processing_fcn=processing_fcn
+                )
             self.execution_result_full_dict = execution_result
             self.result_count = len(execution_result)
 

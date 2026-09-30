@@ -1,15 +1,59 @@
+import io
 import json
-import subprocess
 import os
 import pathlib
+import re
+import tarfile
+import uuid
+
+import docker
+from docker.errors import DockerException, ImageNotFound
 
 SQL_RESULTS_DIR = os.getenv(
     "DATASTORM_SQL_RESULTS_DIR",
     str(pathlib.Path(__file__).resolve().parents[3] / "sql_results"),
 )
-import tempfile
-import uuid
-import re
+
+_DOCKER_IMAGE = "python:3.10"
+
+_INSTALL_CMD = "pip install -q pandas==2.2.3 plotly"
+
+_PIP_WARNING_PATTERNS = [
+    re.compile(r".*WARNING: Running pip as the 'root' user.*"),
+    re.compile(r".*\[notice\] A new release of pip is available.*"),
+    re.compile(r".*\[notice\] To update, run: pip install --upgrade pip"),
+]
+
+def _clean_stdout(stdout: str) -> str:
+    """Remove initial pip installation output"""
+    marker = "threadpoolctl-3.6.0\n"
+    if marker in stdout:
+        return stdout[stdout.index(marker) + len(marker):].strip()
+    return stdout
+
+
+def _clean_stderr(stderr: str) -> str:
+    """Filter pip notice"""
+    if not stderr:
+        return ""
+    lines = stderr.splitlines()
+    kept = [
+        line for line in lines
+        if not any(p.match(line) for p in _PIP_WARNING_PATTERNS)
+    ]
+    return "\n".join(kept)
+
+def _put_text_file(container, remote_dir: str, filename: str, text: str) -> str:
+    """Upload `text` ass file inside the container via put_archive"""
+    data = text.encode("utf-8")
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        info = tarfile.TarInfo(name=filename)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    tar_stream.seek(0)
+    container.put_archive(remote_dir, tar_stream)
+    return f"{remote_dir.rstrip('/')}/{filename}"
 
 
 def execute_python_code_in_sandbox(code: str, timeout: int = 60) -> dict:
@@ -20,94 +64,55 @@ def execute_python_code_in_sandbox(code: str, timeout: int = 60) -> dict:
       - dict with { "stdout": ..., "stderr": ..., "returncode": ... }
       or { "error": ... } in case of any timeout or unexpected exceptions.
     """
-    # Docker image that has Python installed -- can pin a version, e.g. "python:3.9-alpine"
-    docker_image = "python:3.10"
-    
-    # Make a unique filename
+    try:
+        client = docker.from_env()
+    except DockerException as e:
+        return {"error": f"Docker client unavailable: {e}"}
+
     unique_id = uuid.uuid4().hex
-    filename = f"/tmp/script_{unique_id}.py"
-    
-    # Write code to a local temp file so we can mount it into the Docker container.
-    with tempfile.NamedTemporaryFile(delete=False, mode="w", suffix=".py") as tmpf:
-        tmpf.write(code)
-        tmpf.flush()
-        local_path = tmpf.name
+    container = None
 
     try:
-        # Run the Docker container, mounting the temp file to /sandbox/script.py inside the container.
-        # --rm : remove container on exit
-        # -v local_path:/sandbox/script.py:ro : read-only mount to reduce potential tampering
-        # --network none : no network access in container, further limiting malicious ops
-        # --memory, --cpus (if your Docker supports it) could also be used for resource limits.
-        # This container only runs the code in an isolated environment and then shuts down.
+        try:
+            client.images.get(_DOCKER_IMAGE)
+        except ImageNotFound:
+            client.images.pull(_DOCKER_IMAGE)
 
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{SQL_RESULTS_DIR}/:{SQL_RESULTS_DIR}/",
-            "-v", f"{local_path}:/sandbox_script.py:ro",
-            "-w", "/sandbox",
-            docker_image,
-            "sh", "-c",
-            # "pip install pandas==2.2.3 && pip install statsmodels && pip install scikit-learn && pip install -q matplotlib && pip install -q seaborn && python3 /sandbox_script.py"
-            "pip install pandas==2.2.3 && pip install -q plotly && python3 /sandbox_script.py"
-        ]
-        
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+        # Sleepy Container: the real code arrives later, via put_archive + exec_run
+        container = client.containers.run(
+            _DOCKER_IMAGE,
+            ["sh", "-c", f"sleep {timeout + 10}"],
+            name=f"datastorm_sandbox_{unique_id}",
+            network_disabled=True,
+            mem_limit="512m",
+            detach=True,
         )
-        
-        # Clean stdout to remove pip installation output
-        stdout_clean = ""
-        if "threadpoolctl" in result.stdout:
-            try:
-                stdout_clean = result.stdout[result.stdout.index("threadpoolctl-3.6.0\n")+len("threadpoolctl-3.6.0\n"):].strip()
-            except ValueError:
-                stdout_clean = result.stdout
-        else:
-            stdout_clean = result.stdout
-        
-        # Filter stderr to remove repetitive pip warnings
-        stderr_clean = ""
-        if result.stderr:
-            # Remove pip warning messages that repeat
-            pip_warnings = [
-                r".*WARNING: Running pip as the 'root' user.*",
-                r".*\[notice\] A new release of pip is available.*",
-                r".*\[notice\] To update, run: pip install --upgrade pip"
-            ]
-            stderr_lines = result.stderr.splitlines()
-            unique_stderr_lines = []
-            
-            # Skip all lines that match any of the warning patterns
-            for line in stderr_lines:
-                matched = False
-                for pattern in pip_warnings:
-                    if re.match(pattern, line):
-                        matched = True
-                        break
-                if not matched:
-                    unique_stderr_lines.append(line)
-            
-            stderr_clean = "\n".join(unique_stderr_lines)
-        
+
+        script_path = _put_text_file(container, "/tmp", f"script_{unique_id}.py", code)
+
+        exec_result = container.exec_run(
+            cmd=["sh", "-c", f"{_INSTALL_CMD} && python3 {script_path}"],
+            stdout=True,
+            stderr=True,
+            demux=True,
+        )
+        stdout_raw, stderr_raw = exec_result.output
+        stdout_raw = (stdout_raw or b"").decode("utf-8", errors="replace")
+        stderr_raw = (stderr_raw or b"").decode("utf-8", errors="replace")
+
         return {
-            "stdout": stdout_clean,
-            "stderr": stderr_clean,
-            "returncode": result.returncode,
+            "stdout": _clean_stdout(stdout_raw),
+            "stderr": _clean_stderr(stderr_raw),
+            "returncode": exec_result.exit_code,
         }
-    except subprocess.TimeoutExpired:
-        return {"error": "Execution timed out"}
     except Exception as e:
         return {"error": str(e)}
     finally:
-        # Cleanup the local temporary file
-        try:
-            os.remove(local_path)
-        except OSError:
-            pass
+        if container is not None:
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass  # cleanup best-effort
 
 
 def execute_python_script(python_script: str) -> dict:
@@ -121,48 +126,48 @@ def execute_python_script(python_script: str) -> dict:
 
 if __name__ == "__main__":
     code_to_run = r'''
-# Question: Is there a significant correlation between the priority level and resolution time of incidents across all categories?
-
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from scipy.stats import spearmanr
-
-# Load the CSV file into a DataFrame
-file_path = os.path.join(SQL_RESULTS_DIR, "example.csv")
-df = pd.read_csv(file_path)
-
-# Assuming the CSV contains a 'resolution_time' column (in hours, days, etc.)
-# and 'priority' column is categorical, we need to encode priority levels numerically.
-priority_mapping = {
-    "1 - Critical": 1,
-    "2 - High": 2,
-    "3 - Moderate": 3,
-    "4 - Low": 4
-}
-df['priority_numeric'] = df['priority'].map(priority_mapping)
-
-# Check for missing values in relevant columns
-if df[['priority_numeric', 'resolution_time']].isnull().any().any():
-    df = df.dropna(subset=['priority_numeric', 'resolution_time'])
-
-# Calculate the Spearman correlation between priority and resolution time
-correlation, p_value = spearmanr(df['priority_numeric'], df['resolution_time'])
-
-# Print the correlation result
-print(f"Spearman Correlation: {correlation}")
-print(f"P-value: {p_value}")
-
-# Visualize the relationship using a scatter plot
-plt.figure(figsize=(10, 6))
-sns.scatterplot(x='priority_numeric', y='resolution_time', data=df, alpha=0.6)
-plt.title('Priority Level vs Resolution Time')
-plt.xlabel('Priority Level (Numeric)')
-plt.ylabel('Resolution Time')
-plt.xticks(ticks=[1, 2, 3, 4], labels=["1 - Critical", "2 - High", "3 - Moderate", "4 - Low"])
-plt.grid(True)
-plt.show()
-'''
+        # Question: Is there a significant correlation between the priority level and resolution time of incidents across all categories?
+        
+        import pandas as pd
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        from scipy.stats import spearmanr
+        
+        # Load the CSV file into a DataFrame
+        file_path = os.path.join(SQL_RESULTS_DIR, "example.csv")
+        df = pd.read_csv(file_path)
+        
+        # Assuming the CSV contains a 'resolution_time' column (in hours, days, etc.)
+        # and 'priority' column is categorical, we need to encode priority levels numerically.
+        priority_mapping = {
+            "1 - Critical": 1,
+            "2 - High": 2,
+            "3 - Moderate": 3,
+            "4 - Low": 4
+        }
+        df['priority_numeric'] = df['priority'].map(priority_mapping)
+        
+        # Check for missing values in relevant columns
+        if df[['priority_numeric', 'resolution_time']].isnull().any().any():
+            df = df.dropna(subset=['priority_numeric', 'resolution_time'])
+        
+        # Calculate the Spearman correlation between priority and resolution time
+        correlation, p_value = spearmanr(df['priority_numeric'], df['resolution_time'])
+        
+        # Print the correlation result
+        print(f"Spearman Correlation: {correlation}")
+        print(f"P-value: {p_value}")
+        
+        # Visualize the relationship using a scatter plot
+        plt.figure(figsize=(10, 6))
+        sns.scatterplot(x='priority_numeric', y='resolution_time', data=df, alpha=0.6)
+        plt.title('Priority Level vs Resolution Time')
+        plt.xlabel('Priority Level (Numeric)')
+        plt.ylabel('Resolution Time')
+        plt.xticks(ticks=[1, 2, 3, 4], labels=["1 - Critical", "2 - High", "3 - Moderate", "4 - Low"])
+        plt.grid(True)
+        plt.show()
+        '''
 
     # Call our function
     print("=== Testing execute_python_script ===")

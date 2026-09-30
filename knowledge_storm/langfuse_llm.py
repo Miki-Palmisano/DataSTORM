@@ -10,6 +10,7 @@ import json
 import re
 from typing import Any, Callable, Optional, TypeVar
 
+import httpx
 import redis.asyncio as redis
 from knowledge_storm.log_utils import logger
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -70,6 +71,10 @@ def get_llm(
         temperature=temperature,
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         rate_limiter=rate_limiter,
+        http_async_client=httpx.AsyncClient(
+            timeout=httpx.Timeout(600.0, connect=10.0),
+            limits=httpx.Limits(max_keepalive_connections=0),
+        ),
     )
 
 T = TypeVar("T")
