@@ -316,7 +316,7 @@ class SqlQuery:
     def _compute_time_series_segment_stats(
         self, segment, time_col, value_col
     ):
-        # Compute statistics for a single time-series segment
+        # Compute statistics for a single time-series segments
 
         segment = segment.sort_values(time_col, kind="stable")
 
