@@ -316,141 +316,55 @@ class SqlQuery:
     def _compute_time_series_segment_stats(
         self, segment, time_col, value_col
     ):
-        # Compute statistics for a single time-series segments
+        """Compute summary statistics for one temporal interval."""
 
-        segment = segment.sort_values(time_col, kind="stable")
-
-        y = segment[value_col].to_numpy(dtype=float)
-        x = (
-            (segment[time_col] - segment[time_col].iloc[0])
-            .dt.total_seconds()
-            .to_numpy(dtype=float)
-            / 86400.0
-        )
-
-        if x[-1] <= 0:
+        if segment.empty:
             return None
 
-        # Set a tolerance for floating-point rounding errors
-        scale = max(1.0, float(np.max(np.abs(y))))
-        tolerance = 100 * np.finfo(float).eps * scale
-        is_constant = bool(np.ptp(y) <= tolerance)
+        # Sort chronologically before computing date-related statistics
+        segment = (
+            segment
+            .sort_values(time_col, kind="stable")
+            .reset_index(drop=True)
+        )
 
-        if is_constant:
-            slope = 0.0
-            direction = "flat"
-        else:
-            slope = float(np.polyfit(x, y, 1)[0])
-            fitted_change = slope * (x[-1] - x[0])
+        dates = segment[time_col]
+        y = segment[value_col].to_numpy(dtype=float)
 
-            if abs(fitted_change) <= tolerance:
-                direction = "flat"
-            elif slope > 0:
-                direction = "increasing"
-            else:
-                direction = "decreasing"
+        # Distribution statistics
+        q1, median, q3, p90 = np.quantile(
+            y, [0.25, 0.50, 0.75, 0.90]
+        )
 
-        mid = len(y) // 2
-        first_half_mean = float(np.mean(y[:mid]))
-        second_half_mean = float(np.mean(y[mid:]))
-        mean_y = float(np.mean(y))
-        std_y = float(np.std(y))
-
-        stats = {
-            # Preserve precision for small daily slopes
-            "linear_trend_slope": float(f"{slope:.10g}"),
-            "slope_unit": "value_per_day",
-            "trend_direction": direction,
-            "first_half_mean": first_half_mean,
-            "second_half_mean": second_half_mean,
-            "coefficient_of_variation": (
-                round(std_y / abs(mean_y), 3)
-                if abs(mean_y) > tolerance
-                else None
-            ),
-        }
-
-        if y[0] != 0:
-            pct_change = (y[-1] - y[0]) / abs(y[0]) * 100
-            stats["pct_change_first_to_last"] = (
-                f"{pct_change:.1f}%"
-            )
-        else:
-            stats["pct_change_first_to_last"] = None
-
-        # Measure the monotonic association between time and values using Kendall's tau
-        stats.update({
-            "mann_kendall_tau": None,
-            "mann_kendall_p_value": None,
-            "trend_significant": None,
-            "kendall_status": "undefined_for_constant_series",
-        })
-
-        if not is_constant:
-            try:
-                from scipy.stats import kendalltau
-
-                tau, p_value = kendalltau(x, y)
-
-                if np.isfinite(tau) and np.isfinite(p_value):
-                    stats.update({
-                        "mann_kendall_tau": round(float(tau), 3),
-                        "mann_kendall_p_value": float(
-                            f"{p_value:.6g}"
-                        ),
-                        "trend_significant": bool(p_value < 0.05),
-                        "kendall_status": "computed",
-                    })
-                else:
-                    stats["kendall_status"] = "undefined"
-
-            except ImportError:
-                stats["kendall_status"] = "scipy_unavailable"
-            except Exception as exc:
-                stats["kendall_status"] = "error"
-                stats["kendall_error"] = str(exc)
-
-        max_idx = int(np.argmax(y))
+        # Find the positions of the minimum and maximum values
         min_idx = int(np.argmin(y))
+        max_idx = int(np.argmax(y))
 
-        stats["max_value_at"] = str(
-            segment.iloc[max_idx][time_col].date()
-        )
-        stats["min_value_at"] = str(
-            segment.iloc[min_idx][time_col].date()
-        )
 
-        stats["level_shift_zscore"] = (
-            round(
-                (second_half_mean - first_half_mean) / std_y,
-                2,
-            )
-            if std_y > tolerance
-            else None
-        )
+        return {
+            # Support / temporal coverage
+            "n_observations": int(len(segment)),
+            "n_unique_timestamps": int(dates.nunique()),
+            "observed_start": str(dates.iloc[0].date()),
+            "observed_end": str(dates.iloc[-1].date()),
 
-        max_run_up = max_run_down = 0
-        cur_up = cur_down = 0
+            # Distribution of values
+            "mean": float(np.mean(y)),
+            "median": float(median),
+            "iqr": float(q3 - q1),
+            "p90": float(p90),
 
-        for difference in np.diff(y):
-            if difference > tolerance:
-                cur_up += 1
-                cur_down = 0
-            elif difference < -tolerance:
-                cur_down += 1
-                cur_up = 0
-            else:
-                # Equal values within tolerance interrupt both runs
-                cur_up = cur_down = 0
+            # Extremes
+            "min_value": float(y[min_idx]),
+            "min_first_at": str(
+                dates.iloc[min_idx].date()
+            ),
+            "max_value": float(y[max_idx]),
+            "max_first_at": str(
+                dates.iloc[max_idx].date()
+            ),
 
-            max_run_up = max(max_run_up, cur_up)
-            max_run_down = max(max_run_down, cur_down)
-
-        stats["longest_consecutive_increase"] = max_run_up
-        stats["longest_consecutive_decrease"] = max_run_down
-        stats["run_unit"] = "transitions_between_observations"
-
-        return stats
+        }
 
     def _choose_temporal_granularity(
         self,
@@ -514,13 +428,12 @@ class SqlQuery:
         }
 
     def _compute_time_series_stats(self, df, time_col, value_col):
-        """Statistiche globali e segmentazione temporale adattiva."""
+        """Compute global and interval-based temporal fingerprints."""
         target_buckets = 8
         max_buckets = 16
-        min_points_per_bucket = 3
 
         result = {
-            "status": "insufficient_observations",
+            "status": "no_observations",
             "time_column": time_col,
             "value_column": value_col,
             "n_input_rows": len(df),
@@ -529,6 +442,9 @@ class SqlQuery:
             "n_discarded_rows": 0,
             "summary_granularity": None,
             "intervals": [],
+            "n_unique_timestamps": 0,
+            "observed_start": None,
+            "observed_end": None,
         }
 
         try:
@@ -567,23 +483,25 @@ class SqlQuery:
             if ts.empty:
                 return result
 
+            result["n_unique_timestamps"] = int(
+            ts[time_col].nunique()
+            )
+
             # Record the first and last observed dates
-            result["start_date"] = str(
+            result["observed_start"] = str(
                 ts[time_col].iloc[0].date()
             )
-            result["end_date"] = str(
+            result["observed_end"] = str(
                 ts[time_col].iloc[-1].date()
             )
 
-
-            if len(ts) < min_points_per_bucket:
-                return result
 
             
             # Compute statistics for the entire series.
             global_stats = self._compute_time_series_segment_stats(
                 ts, time_col, value_col
             )
+
             if global_stats is None:
                 return result
 
@@ -635,12 +553,12 @@ class SqlQuery:
                     "status": (
                         "no_observations"
                         if count == 0
-                        else "insufficient_observations"
+                        else "computed"
                     ),
                     "stats": None,
                 }
 
-                if count >= min_points_per_bucket:
+                if count > 0:  
                     record["stats"] = self._compute_time_series_segment_stats(
                         segment, time_col, value_col
                     )
@@ -710,7 +628,7 @@ class SqlQuery:
                             col_stats["median"] = series.median()
                             col_stats["mean"] = series.mean()
 
-                            # --- NUOVO: se c'è una colonna temporale e questa è numerica, aggiungi trend stats ---
+                            # Add temporal interval fingerprints for numeric columns
                             if time_col and column != time_col and pd.api.types.is_numeric_dtype(df[column]):
                                 ts_stats = self._compute_time_series_stats(df, time_col, column)
                                 if ts_stats:
