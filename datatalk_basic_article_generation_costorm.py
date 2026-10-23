@@ -439,8 +439,6 @@ db_description_mapping = {
         "0 means none reported, not that none occurred. Vague reports are coded as fixed values (several = 3 or "
         "10, dozens = 12, hundreds = 100). Figures are revised over time and are the least reliable field: "
         "treat them as indicative.\n"
-        "- For analysis by day or week, filter time_precision = 1 or accept that precision 2 and 3 dates are "
-        "mid-week and mid-month placeholders.\n"
         "- Strategic developments are context-specific, rarely fatal and not comparable to Political violence "
         "or Demonstrations; do not use them to measure levels of violence.\n"
         "- Protests are non-violent by definition (3+ participants); Riots are violent or destructive. Counts "
