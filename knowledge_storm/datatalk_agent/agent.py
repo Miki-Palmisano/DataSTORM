@@ -1,10 +1,10 @@
 import ast
 import json
 import os
+import re
 from pydantic import BaseModel
 from typing import Union, List, Optional, Literal
 from datetime import date
-import difflib
 
 from knowledge_storm.log_utils import logger
 from langgraph.graph import END, StateGraph
@@ -88,10 +88,24 @@ def retrieve_relevant_domain_specific_instructions(
                 raise ValueError()
     return res
 
-def _is_similar_sql(a: str, b: str, threshold: float = 0.85) -> bool:
-    if not a or not b:
-        return False
-    return difflib.SequenceMatcher(None, a, b).ratio() >= threshold
+
+def _norm_sql(s: str) -> str:
+    # Whitespace and a trailing ';' do not change a query. String literals are case-sensitive
+    # in Postgres, so we deliberately do NOT lower-case.
+    return re.sub(r"\s+", " ", (s or "").strip().rstrip(";").strip())
+
+
+def _is_same_sql(a: str, b: str) -> bool:
+    """True only when the two queries are identical after whitespace normalization."""
+    return bool(a) and bool(b) and _norm_sql(a) == _norm_sql(b)
+
+
+def _history_window(actions, head: int = 2, tail: int = 8):
+    """Keep the first `head` actions (schema / linking) plus the last `tail` ones."""
+    if len(actions) <= head + tail:
+        return list(actions)
+    return list(actions[:head]) + list(actions[-tail:])
+
 
 cache_entity_linking = RedisLLMCacheEntityLinking(redis_url="redis://redis:6379", ttl=3600)
 
@@ -247,7 +261,8 @@ class DatatalkParser(BaseParser):
         # check if REPEATED_ACTION_OBSERVATION appears twice in a row in the last two actions
         if len(actions) >= 3:
             if state["actions"][-1].action_name == "execute_sql" and state["actions"][-2].action_name == "execute_sql":
-                if state["actions"][-2].observation == REPEATED_ACTION_OBSERVATION and state["actions"][-1].action_argument == state["actions"][-2].action_argument:
+                if state["actions"][-2].observation == REPEATED_ACTION_OBSERVATION and _is_same_sql(
+                        state["actions"][-1].action_argument, state["actions"][-2].action_argument):
                     return END
         
         return state["actions"][-1].action_name
@@ -276,12 +291,12 @@ class DatatalkParser(BaseParser):
             return action
         
         # make the history shorter
-        actions = state["actions"][-10:]
+        actions = _history_window(state["actions"])
         action_history = []
         image_dicts = []
         
         get_tables_schema_results = []
-        seen_sql_args = []
+        shown_sql = []  # SQL whose observation has really been included in the prompt
         for i, a in enumerate(actions):
             include_observation = True
             
@@ -294,22 +309,22 @@ class DatatalkParser(BaseParser):
             ]:
                 include_observation = False
 
-            # check if the same SQL query is already append to response
-            if a.action_name == "execute_sql" and any(_is_similar_sql(a.action_argument, s) for s in seen_sql_args):
-                # same SQL (or very similar) already executed in this loop: the observation
-                # (often a huge table) has already been displayed above.
-                if a.result_count is not None and a.result_count != -1:
-                    obs_note = f"(same result as above: {a.result_count} rows)"
-                else:
-                    obs_note = "(same result as above)"
-                action_history.append(
-                    f"Thought: {a.thought}\nAction: execute_sql(<same query as a previous action above>)\n"
-                    f"Observation: {obs_note}\n"
-                )
-                continue
             if a.action_name == "execute_sql" and a.action_argument:
-                seen_sql_args.append(a.action_argument)
-                
+                is_repeat_warning = a.observation == REPEATED_ACTION_OBSERVATION
+                # collapse only if an IDENTICAL query was already shown with its observation,
+                # and never hide the "already taken this action" warning
+                if (not is_repeat_warning and include_observation
+                        and any(_is_same_sql(a.action_argument, s_) for s_ in shown_sql)):
+                    n = f" ({a.result_count} rows)" if a.result_count not in (None, -1) else ""
+                    action_history.append(
+                        f"Thought: {a.thought}\nAction: execute_sql(<identical to a query above>)\n"
+                        f"Observation: identical query already executed above{n}. "
+                        f"Do NOT run it again: use the earlier result or change the query.\n"
+                    )
+                    continue
+                if include_observation and not is_repeat_warning:
+                    shown_sql.append(a.action_argument)
+
             # exclude get_tables_schema results that are the same
             if a.action_name == "get_tables_schema":
                 if a.observation in get_tables_schema_results:
@@ -319,7 +334,7 @@ class DatatalkParser(BaseParser):
             
             action_history.append(a.to_jinja_string(include_observation))
             if a.images_b64s:
-                image_dicts=[{
+                image_dicts = [{
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/png;base64,{image_data}"
@@ -347,7 +362,8 @@ class DatatalkParser(BaseParser):
             try:
                 if state["conversation_history"] == [] and not state["actions"] and state["num_init_steps_cached"] > 0:
                     action = await get_cached_initial_actions(1)
-                elif state["conversation_history"] == [] and len(state["actions"]) == 1 and state["num_init_steps_cached"] > 1:
+                elif state["conversation_history"] == [] and len(state["actions"]) == 1 and state[
+                    "num_init_steps_cached"] > 1:
                     action = await get_cached_initial_actions(2)
 
                 else:
@@ -407,16 +423,17 @@ class DatatalkParser(BaseParser):
         current_action.result_count = sql.result_count
 
         # move_back_on_duplicate_action = 1
-        def check_sql_in_last_two_turns(current_action, state):
-            for i in [2,3]:
-                if len(state["actions"]) >= i and state["actions"][-i].action_name == "execute_sql" and current_action.action_argument == state["actions"][-i].action_argument:
-                    state["actions"][-1].observation = REPEATED_ACTION_OBSERVATION
-                    return state
+        def check_sql_in_last_turns(current_action, state, window=6):
+            previous = state["actions"][:-1][-window:]
+            if any(a.action_name == "execute_sql"
+                   and _is_same_sql(current_action.action_argument, a.action_argument)
+                           for a in previous):
+                state["actions"][-1].observation = REPEATED_ACTION_OBSERVATION
             return state
         
         current_action = DatatalkParser.get_current_action(state)
-        if current_action.action_name == "execute_sql" :
-            state = check_sql_in_last_two_turns(current_action, state)
+        if current_action.action_name == "execute_sql":
+            state = check_sql_in_last_turns(current_action, state)
 
         return {"generated_sqls": sql, "actions": state["actions"]}
 
@@ -580,7 +597,7 @@ class DatatalkParser(BaseParser):
             controller_reporter="controller"
         )
 
-        actions = state["actions"][-10:]
+        actions = _history_window(state["actions"])
         action_history = []
         for i, a in enumerate(actions):
             include_observation_bool = True if a.action_name in include_observation_actions else False

@@ -21,28 +21,28 @@ pd.set_option('display.float_format', '{:.2f}'.format)  # 2 decimal places
 
 
 def json_to_panda_markdown(
-    data: List[dict],
-    head = 10,
-    processing_fcn = None
+        data: List[dict],
+        head=10,
+        processing_fcn=None
 ) -> str:
     df = pd.DataFrame(data)
-    
+
     # Determine the number of rows to show at the top and bottom
     num_head = head // 2
     num_tail = head - num_head
-    
+
     # Create the truncated DataFrame
     if len(df) > head and head > 0:
         head_df = df.head(num_head)
         tail_df = df.tail(num_tail)
-        
+
         # Number of omitted rows
         omitted_rows = len(df) - head
-        
+
         # Create a custom row with '... (x omitted) | ... | ...'
         custom_row = pd.DataFrame({col: ['...'] for col in df.columns})
         custom_row[df.columns[0]] = f'... ({omitted_rows} omitted)'
-        
+
         # Concatenate the head, custom row, and tail DataFrames
         truncated_df = pd.concat([head_df, custom_row, tail_df], ignore_index=True)
     else:
@@ -62,10 +62,11 @@ def json_to_panda_markdown(
 
 MAX_RESULT_TOKENS = 2000
 
+
 def json_to_panda_markdown_token_limited(
-    data: List[dict],
-    max_tokens: int = MAX_RESULT_TOKENS,
-    processing_fcn=None,
+        data: List[dict],
+        max_tokens: int = MAX_RESULT_TOKENS,
+        processing_fcn=None,
 ) -> str:
     import tiktoken
 
@@ -87,8 +88,8 @@ def json_to_panda_markdown_token_limited(
 
     # Split rendered markdown into header lines and per-row lines
     lines = full_md.split('\n')
-    header_lines = lines[:2]   # column names + separator line
-    data_lines = lines[2:]     # one line per data row
+    header_lines = lines[:2]  # column names + separator line
+    data_lines = lines[2:]  # one line per data row
 
     header_tokens = len(enc.encode('\n'.join(header_lines)))
     omit_tokens = 20  # rough budget for the "... (X omitted)" row
@@ -128,8 +129,8 @@ def json_to_panda_markdown_token_limited(
 
 
 def json_to_panda_csv(
-    data: List[dict],
-    processing_fcn = None
+        data: List[dict],
+        processing_fcn=None
 ) -> str:
     df = pd.DataFrame(data)
     if processing_fcn:
@@ -151,7 +152,7 @@ def json_to_markdown_table(data):
 
     # Extract headers, and put _id up front
     headers = rearrange_list(list(data[0].keys()))
-    
+
     # Start building the Markdown table
     markdown_table = "| " + " | ".join(headers) + " |\n"
     markdown_table += "| " + " | ".join(["-" * len(header) for header in headers]) + " |\n"
@@ -212,18 +213,18 @@ def parse_execute_python_from_sql_output(output: str) -> tuple[str, list[str]]:
 
 class SqlQuery:
     def __init__(
-        self,
-        sql: Optional[str],
-        table_w_ids: dict,
-        database_name: str,
-        embedding_server_address: str,
-        free_text_server_address: str,
-        source_file_mapping: dict,
-        suql_model_name: str,
-        db_type: str,
-        db_secrets_file: str,
-        suql_enabled: bool,
-        db_path: Optional[str] = None
+            self,
+            sql: Optional[str],
+            table_w_ids: dict,
+            database_name: str,
+            embedding_server_address: str,
+            free_text_server_address: str,
+            source_file_mapping: dict,
+            suql_model_name: str,
+            db_type: str,
+            db_secrets_file: str,
+            suql_enabled: bool,
+            db_path: Optional[str] = None
     ):
         if "SELECT" not in sql:
             self.is_valid = False
@@ -255,17 +256,16 @@ class SqlQuery:
         cleaned_sql = sql.strip()
         return cleaned_sql
 
-
     async def execute(
-        self,
-        processing_fcn = None,
-        limit_query = " LIMIT 1000"
+            self,
+            processing_fcn=None,
+            limit_query=" LIMIT 1000"
     ):
         if self.sql == "SELECT * FROM information_schema.tables WHERE table_schema = 'public';":
             self.execution_result_sample = "Prohibited. Use `get_tables_schema`"
             self.execution_result_full_dict = "Prohibited. Use `get_tables_schema`"
             return
-        
+
         # TODO: probably need to perform some post processing by using column_names with self.execution_result
         execution_result, self.execution_status = await execute_sql(
             self.sql,
@@ -278,10 +278,9 @@ class SqlQuery:
             self.db_type,
             self.db_secrets_file,
             self.suql_enabled,
-            limit_query = limit_query,
-            db_path = self.db_path
+            limit_query=limit_query,
+            db_path=self.db_path
         )
-
 
         if execution_result is not None:
             # if self.sql in self.full_result_enums:
@@ -314,7 +313,7 @@ class SqlQuery:
         return None
 
     def _compute_time_series_segment_stats(
-        self, segment, time_col, value_col
+            self, segment, time_col, value_col
     ):
         """Compute summary statistics for one temporal interval."""
 
@@ -339,7 +338,6 @@ class SqlQuery:
         # Find the positions of the minimum and maximum values
         min_idx = int(np.argmin(y))
         max_idx = int(np.argmax(y))
-
 
         return {
             # Support / temporal coverage
@@ -367,12 +365,12 @@ class SqlQuery:
         }
 
     def _choose_temporal_granularity(
-        self,
-        ts,
-        time_col,
-        *,
-        target_buckets=8,
-        max_buckets=16,
+            self,
+            ts,
+            time_col,
+            *,
+            target_buckets=8,
+            max_buckets=16,
     ):
         """Choose calendar segmentation based on the observed time span.
         Prefer the number of intervals closest to target_buckets.
@@ -403,7 +401,7 @@ class SqlQuery:
 
             # Count all calendar intervals, including empty ones
             calendar_bucket_count = (
-                end_period.ordinal - start_period.ordinal + 1
+                    end_period.ordinal - start_period.ordinal + 1
             )
 
             if not 2 <= calendar_bucket_count <= max_buckets:
@@ -419,7 +417,7 @@ class SqlQuery:
             return None
 
         # Stable sorting preserves the original candidate order for ties
-        valid_candidates.sort(key=lambda item: item[0])  
+        valid_candidates.sort(key=lambda item: item[0])
         _, name, frequency = valid_candidates[0]
 
         return {
@@ -463,8 +461,8 @@ class SqlQuery:
             )
 
             valid_rows = (
-                ts[time_col].notna()
-                & ts[value_col].notna()
+                    ts[time_col].notna()
+                    & ts[value_col].notna()
             )
 
             result["n_discarded_rows"] = int(
@@ -484,7 +482,7 @@ class SqlQuery:
                 return result
 
             result["n_unique_timestamps"] = int(
-            ts[time_col].nunique()
+                ts[time_col].nunique()
             )
 
             # Record the first and last observed dates
@@ -495,8 +493,6 @@ class SqlQuery:
                 ts[time_col].iloc[-1].date()
             )
 
-
-            
             # Compute statistics for the entire series.
             global_stats = self._compute_time_series_segment_stats(
                 ts, time_col, value_col
@@ -520,12 +516,11 @@ class SqlQuery:
                 max_buckets=max_buckets,
             )
 
-            
             if granularity is None:
                 result["segmentation_reason"] = (
                     "no_suitable_granularity"
                 )
-                return result   
+                return result
 
             result["summary_granularity"] = granularity["name"]
 
@@ -743,20 +738,21 @@ class Action:
         "stop",
         "execute_python_from_sql",
 
-        "error" # a special action to denote that an error occured in one of the action parsing
+        "error"  # a special action to denote that an error occured in one of the action parsing
     ]
 
     # All actions have a single input parameter for now
-    def __init__(self, thought: str, action_name: str, action_argument: str, observation: str = None, images_b64s: List[str] = []):
-        if action_name.strip() == "stop()":
-            action_name = "stop"
-        
+    def __init__(self, thought: str, action_name: str, action_argument: str, observation: str = None,
+                 images_b64s: List[str] = []):
+        # tolerate calls written with parentheses, e.g. "stop()" or "get_tables()"
+        action_name = re.sub(r"\(.*\)$", "", action_name.strip())
+
         self.thought = thought
         self.action_name = action_name
         self.action_argument = action_argument
         self.observation = observation
         self.postprocessed_action_argument = action_argument  # for now - it may become different from standard action_argument if entity_linking gets called
-        self.result_count = None # this only applies to execute SQLs.
+        self.result_count = None  # this only applies to execute SQLs.
         self.images_b64s = images_b64s
 
         assert self.action_name in Action.possible_actions, f"{self.action_name} not in permitted actions"
@@ -771,7 +767,7 @@ class Action:
             "observation": self.observation,
             "images_b64s": self.images_b64s
         }
-        
+
     @classmethod
     def from_dict(cls, data):
         """Dynamically instantiate an object from a dictionary."""
@@ -789,21 +785,22 @@ class Action:
             # for SQL queries, we still append a string showing how long the output was
             if self.result_count is not None:
                 if self.result_count == -1:
-                    ret += f"Did not find any results"
+                    ret += "Did not find any results\n"
                 else:
                     ret += f"Observation omitted due to length. Retrieved {self.result_count} rows\n"
-            ret += f"Observation omitted due to length.\n"
-            
+            else:
+                ret += "Observation omitted due to length.\n"
+
         return ret
-    
+
     async def print_chainlit(self, step_name):
         import chainlit as cl  # lazy: see module-level note about chainlit side effects
         async with cl.Step(name=step_name, type="tool", show_input=False) as step_thought:
             thought = self.thought
             action = f"{self.postprocessed_action_argument}"
-            
+
             if not self.action_argument:
-                 step_thought.output = f"""### Thought
+                step_thought.output = f"""### Thought
 {thought}
 """
 
@@ -815,11 +812,11 @@ class Action:
 ```sql\n{action}
 ```
 """
-                
+
             elif self.action_name in ['entity_linking', 'location_linking']:
                 observation = self.observation
-                observation="```python\n"+str(observation)+"\n```"
-                
+                observation = "```python\n" + str(observation) + "\n```"
+
                 step_thought.output = f"""### Thought
 {thought}
 
@@ -840,7 +837,7 @@ class Action:
                             cl.Image(
                                 content=img_bytes,
                                 mime="image/png",
-                                name=f"plot_{i+1}.png",
+                                name=f"plot_{i + 1}.png",
                                 display="inline",
                             )
                         )
@@ -867,8 +864,8 @@ class Action:
             else:
                 observation = self.observation
                 if self.action_name == "get_tables_schema":
-                    observation="```python\n"+str(observation)+"\n```"
-            
+                    observation = "```python\n" + str(observation) + "\n```"
+
                 step_thought.output = f"""### Thought
 {thought}
 
@@ -891,8 +888,8 @@ class Action:
         if not isinstance(other, Action):
             return NotImplemented
         return (
-            self.action_name == other.action_name
-            and self.action_argument == other.action_argument
+                self.action_name == other.action_name
+                and self.action_argument == other.action_argument
         )
 
     def __hash__(self):

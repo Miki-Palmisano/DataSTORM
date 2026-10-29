@@ -380,16 +380,22 @@ db_description_mapping = {
         
         "Columns:\n"
         "- event_id_cnty (text): unique event identifier (country acronym + number, e.g. ETH9766)\n"
-        "- event_date (date), year (int)\n"
+        
+        "- event_date (date)\n"
+        
         "- year (date): The year in which the event took place.\n"
+        
         "- time_precision (int 1-3): 1 = exact date; 2 = only the week is known (date set to mid-week); "
         "3 = only the month is known (date set to mid-month). Higher = less precise\n"
+        
         "- disorder_type (text): 'Political violence' (Battles, Explosions/Remote violence, Violence against "
         "civilians, Mob violence), 'Demonstrations' (Peaceful protest, Protest with intervention, Violent "
         "demonstration), 'Strategic developments', and the combined value 'Political violence; Demonstrations' "
         "(Excessive force against protesters). There is no 'Armed Conflict' or 'Protests' disorder_type.\n"
+        
         "- event_type (text): Battles, Protests, Riots, Explosions/Remote violence, Violence against civilians, "
         "Strategic developments\n"
+        
         "- sub_event_type (text), by event_type: Battles: Armed clash, Government regains territory, "
         "Non-state actor overtakes territory | Protests: Peaceful protest, Protest with intervention, "
         "Excessive force against protesters | Riots: Violent demonstration, Mob violence | "
@@ -399,33 +405,57 @@ db_description_mapping = {
         "Strategic developments: Agreement, Arrests, Change to group/activity, Disrupted weapons use, "
         "Headquarters or base established, Looting/property destruction, "
         "Non-violent transfer of territory, Other\n"
+        
         "- actor1, actor2 (text): the two main actors. Actor 1 is not necessarily the aggressor; only in "
         "Violence against civilians is the target always actor2. Generic actors are named 'Protesters (Country)', "
         "'Rioters (Country)', 'Civilians (Country)', 'Unidentified Armed Group (Country)'. actor2 can be blank\n"
+        
         "- assoc_actor_1, assoc_actor_2 (text): associated actors, semicolon-separated, can be blank\n"
+        
         "- inter1, inter2 (text): actor type (State forces, Rebel group, Political militia, Identity militia, "
         "Rioters, Protesters, Civilians, External/Other forces)\n"
-        "- interaction (text): combination of inter1 and inter2, independent of their order\n"
-        "- civilian_targeting (text): 'Civilians targeted' or blank. Marks events where civilians were the "
+        
+        "- interaction (text): pair of actor types in a FIXED canonical order, e.g. 'State forces-Civilians', "
+        "'Rebel group-External/Other forces', or 'Protesters only'. The reverse order (e.g. 'Civilians-State forces') "
+        "does NOT exist. To filter on an actor type regardless of position use interaction ILIKE '%Civilians%' or "
+        "(inter1 = 'X' OR inter2 = 'X'). Note that inter1 and inter2 do not follow the canonical order.\n"
+        
+        "- civilian_targeting (text): 'Civilian targeting' or blank. Marks events where civilians were the "
         "main or only target, including some Explosions/Remote violence, Riots and Excessive force against "
         "protesters events, not only Violence against civilians. Incidental harm is not included\n"
+        
         "- iso (int): ISO 3166 numeric country code\n"
+        
         "- region (text): world sub-region (e.g. 'Eastern Africa'), not a subdivision of a country\n"
+        
         "- country (text), admin1 (text, largest sub-national unit), admin2, admin3 (can be blank)\n"
+        
         "- admin1 (text): The largest sub-national administrative region in which the event took place.\n"
+        
         "- admin2 (text): The second largest sub-national administrative region in which the event took place.\n"
+        
         "- admin3 (text): The third largest sub-national administrative region in which the event took place.\n"
+        
         "- location (text): named place of the event; latitude, longitude (double precision): centroid of "
         "that place, not a street-level position\n"
+        
         "- latitude (double precision): The latitude of the location in four decimal degrees notation (EPSG:4326).\n"
+        
         "- longitude (double precision): The longitude of the location in four decimal degrees notation (EPSG:4326).\n"
+        
         "- geo_precision (int 1-3): 1 = town, 2 = near a town or small area, 3 = larger region. Higher = less precise\n"
+        
         "- source (text, semicolon-separated), source_scale (text), notes (text, short description), "
         "tags (text, semicolon-separated), timestamp (Unix time of upload)\n"
+        
         "- source_scale (text): An indication of the geographic closeness of the used sources to the event.\n"
+        
         "- notes (text): A short description of the event.\n"
+        
         "- fatalities (int): REPORTED fatalities for the event\n"
+        
         "- tags (text): Additional structured information about the event. Separated by a semicolon.\n"
+        
         "- timestamp (bigint): An automatically generated Unix timestamp that represents the exact date and time an event was uploaded to the ACLED API.\n"
         
         "Reading the data:\n"

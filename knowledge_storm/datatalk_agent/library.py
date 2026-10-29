@@ -37,6 +37,8 @@ import litellm
 from knowledge_storm.langfuse_llm import call_llm_with_structured_output, get_llm
 from knowledge_storm.datatalk_agent.agent import (
     DatatalkParser,
+    REPEATED_ACTION_OBSERVATION,
+    _is_same_sql,
     retrieve_relevant_domain_specific_instructions,
 )
 from knowledge_storm.datatalk_agent.sql_utils import prepare_initialize
@@ -70,6 +72,11 @@ SQL_FULL_TABLE_THRESHOLD = int(os.getenv("DATASTORM_SQL_FULL_THRESHOLD", "500"))
 SQL_ANOMALY_GROUP_BY = tuple(
     c.strip() for c in os.getenv("DATASTORM_ANOMALY_GROUP_BY", "admin1").split(",") if c.strip()
 )
+# Quanti risultati SQL DISTINTI mostrare con la loro osservazione al reporter.
+REPORTER_MAX_SQL_OBSERVATIONS = int(os.getenv("DATASTORM_REPORTER_MAX_SQL_OBS", "7"))
+# Se "0", il testo "## Report" del reporter NON viene inserito in `summary`
+# (evita che il summarizer a valle riusi le conclusioni del reporter al posto dei dati).
+SUMMARY_INCLUDE_REPORT = os.getenv("DATASTORM_SUMMARY_INCLUDE_REPORT", "1") == "1"
 
 
 def _cap_note() -> str:
@@ -109,6 +116,58 @@ def _result_text_for_llm(sql_query_object: Any, *, small_table_uses_sample: bool
         return json_to_panda_markdown_token_limited(full_rows)
 
     return selection_note + "\n\n" + json_to_panda_markdown_token_limited(shown_rows)
+
+
+def _build_reporter_action_history(actions) -> List[str]:
+    """
+    Cronologia delle azioni per il reporter.
+
+    - Le query execute_sql ripetute (stessa SQL normalizzata, oppure marcate con
+      REPEATED_ACTION_OBSERVATION) compaiono come una riga compatta, senza osservazione.
+    - Mostrano l'osservazione le ultime REPORTER_MAX_SQL_OBSERVATIONS query DISTINTE
+      (prima occorrenza di ciascuna), non le ultime N azioni: così i dati reali non vengono
+      spinti fuori dalla finestra da una serie di tentativi ripetuti.
+    - stop: nessuna osservazione. get_tables_schema identici: osservazione solo la prima volta.
+    """
+    # prima occorrenza di ogni SQL che ha davvero restituito un'osservazione
+    first_idx: List[int] = []
+    for i, a in enumerate(actions):
+        if (
+            a.action_name == "execute_sql"
+            and a.observation
+            and a.observation != REPEATED_ACTION_OBSERVATION
+            and not any(_is_same_sql(a.action_argument, actions[j].action_argument) for j in first_idx)
+        ):
+            first_idx.append(i)
+    show_obs = set(first_idx[-REPORTER_MAX_SQL_OBSERVATIONS:]) if REPORTER_MAX_SQL_OBSERVATIONS > 0 else set()
+
+    history: List[str] = []
+    get_tables_schema_results: List[Any] = []
+    seen_sql: List[str] = []
+    for i, a in enumerate(actions):
+        include_observation = True
+        if a.action_name == "execute_sql":
+            is_dup = a.observation == REPEATED_ACTION_OBSERVATION or any(
+                _is_same_sql(a.action_argument, s_) for s_ in seen_sql
+            )
+            if is_dup:
+                history.append(
+                    f"Thought: {a.thought}\nAction: execute_sql(<identical to an earlier query>)\n"
+                    f"Observation: skipped (duplicate query).\n"
+                )
+                continue
+            if a.action_argument:
+                seen_sql.append(a.action_argument)
+            include_observation = i in show_obs
+        elif a.action_name == "stop":
+            include_observation = False
+        if a.action_name == "get_tables_schema":
+            if a.observation in get_tables_schema_results:
+                include_observation = False
+            else:
+                get_tables_schema_results.append(a.observation)
+        history.append(a.to_jinja_string(include_observation))
+    return history
 
 
 # ---------------------------------------------------------------------------
@@ -484,19 +543,7 @@ async def run_single_message(
     domain_specific_instructions: set = set()
     if "actions" in state:
         actions = state["actions"]
-        get_tables_schema_results: List[Any] = []
-        for i, a in enumerate(actions):
-            include_observation = True
-            if i < len(actions) - 7 and a.action_name in ["execute_sql"]:
-                include_observation = False
-            elif a.action_name == "stop":
-                include_observation = False
-            if a.action_name == "get_tables_schema":
-                if a.observation in get_tables_schema_results:
-                    include_observation = False
-                else:
-                    get_tables_schema_results.append(a.observation)
-            action_history.append(a.to_jinja_string(include_observation))
+        action_history = _build_reporter_action_history(actions)
 
         for a in reversed(actions):
             if a.action_name == "execute_sql":
@@ -559,7 +606,8 @@ async def run_single_message(
         msg_content += f"## Result\n\n{sql_result}\n\n"
         summary += f"## Result\n\n{sql_result}\n\n"
         msg_content += f"## Report\n\n{report}\n\n"
-        summary += f"## Report\n\n{report}\n\n"
+        if SUMMARY_INCLUDE_REPORT:
+            summary += f"## Report\n\n{report}\n\n"
 
         if sql_query_object.execution_result_full_dict is not None:
             result_count = len(sql_query_object.execution_result_full_dict)
