@@ -14,14 +14,20 @@ Functionality:
     these describe location or identity rather than magnitude (time is handled
     via time windows, not clustering).
   - Assigns an anomaly score to each row using IsolationForest
-  - Returns only the top K most anomalous rows (default: 25), SORTED by
-    descending score, including the `_anomaly_score` and a diagnostic dictionary.
+  - Returns a MIXED selection (configurable with environment variables):
+      * the TOP_K most anomalous rows (default 50), label `top_anomalous`;
+      * the remaining rows, ranked by score, are split into N_TIERS equal-size tiers
+        (default 5): tier_1 = just below the top ... tier_N = most typical. From each tier
+        the first PER_TIER rows by score are shown (default 10), label `tier_k`.
+    Each row carries `_anomaly_score` and `_selection`. The two groups are interleaved, so
+    that token truncation of the tail cannot remove one group or one tier entirely.
+    A diagnostic dictionary is returned too.
   - Small tables (<= `full_threshold` rows) are passed through unchanged.
 """
 
 import logging
-import math
 import re
+from itertools import zip_longest
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -38,9 +44,13 @@ _NON_MEASURE_PREFIXES = ("centroid_", "sort_", "section_", "rank_")
 _NON_MEASURE_SUFFIXES = ("_rank", "_sort_key")
 _NON_MEASURE_EXACT = frozenset({"rank", "rn", "row_num", "row_number", "sort_key"})
 _COORD_RE = re.compile(r"(^|_)(lat|lon|lng|latitude|longitude)$")
-_HDBSCAN_MAX_ROWS = 20000
 _MIN_GROUP_SIZE = 20
 _Z_CLIP = 20.0
+
+# mixed selection (see module docstring)
+_TOP_K = 50
+_N_TIERS = 5
+_PER_TIER = 10
 
 
 def _is_non_measure(name: str) -> bool:
@@ -75,7 +85,6 @@ def _is_id_like(name: str, series, n: int) -> bool:
 def _robust_z(v: np.ndarray) -> np.ndarray:
     """(v - median) / robust scale; the scale shifts from the IQR to wider intervals if the data are nearly identical."""
     med = np.median(v)
-    scale = 0.0
     for lo, hi in ((25, 75), (10, 90), (1, 99)):
         a, b = np.percentile(v, [lo, hi])
         scale = float(b - a)
@@ -88,7 +97,7 @@ def _robust_z(v: np.ndarray) -> np.ndarray:
 
 def build_feature_matrix(
     df, *, exclude: Sequence[str] = (), group_by: Sequence[str] = ()
-) -> Tuple[Optional[np.ndarray], List[str], Dict[str, str]]:
+):
     """Return (X, used_numeric_columns, {discarded_column: reason})."""
     import pandas as pd
 
@@ -153,7 +162,7 @@ def build_feature_matrix(
 
 def score_anomalies(
     X: np.ndarray, random_state: int = 0
-) -> Tuple[np.ndarray, str]:
+):
     """Anomaly score per row (higher = more anomalous)"""
     n = len(X)
 
@@ -168,23 +177,20 @@ def score_anomalies(
 
 
 def select_anomalous_rows(
-    rows: Optional[List[Dict[str, Any]]],
+    rows,
     *,
     full_threshold: int = 50,
-    top_frac: float = 0.01,
-    min_rows: int = 10,
-    max_rows: int = 25,
-    exclude_columns: Sequence[str] = (),
-    group_by: Sequence[str] = (),
+    exclude_columns = (),
+    group_by = (),
     random_state: int = 0,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+):
     """
     Returns (rows_to_show, info). It never raises an exception: in the event of an error or unusable features,
     it returns the original rows.
     """
     rows = rows or []
     n = len(rows)
-    info: Dict[str, Any] = {
+    info = {
         "n_total": n,
         "n_selected": n,
         "features_used": [],
@@ -204,11 +210,57 @@ def select_anomalous_rows(
             return rows, info
 
         scores = score_anomalies(X, random_state=random_state)
-        k = min(n, max_rows, max(min_rows, math.ceil(top_frac * n)))
-        top_idx = np.argsort(-scores, kind="stable")[:k]  # descending score: token truncation discards the least anomalous ones
+        order = np.argsort(-scores, kind="stable")  # most anomalous first
+        top_k = min(_TOP_K, n)
+        top_idx = order[:top_k]
+        rest = order[top_k:]  # still sorted by descending score
 
-        selected = [{**rows[i], "_anomaly_score": round(float(scores[i]), 3)} for i in top_idx]
-        info.update(n_selected=len(selected), features_used=used)
+        # equal-count tiers of the remaining rows (tier_1 = just below the top, tier_N = most typical);
+        # from each tier, its first _PER_TIER rows by score.
+        tier_picks = []
+        tier_info = []
+        if len(rest) and _N_TIERS > 0 and _PER_TIER > 0:
+            offset = top_k
+            for t, chunk in enumerate(np.array_split(rest, _N_TIERS), start=1):
+                if len(chunk) == 0:
+                    continue
+                start, end = offset, offset + len(chunk)
+                offset = end
+                tier_picks.append(chunk[len(chunk)//2 - 5 : len(chunk)//2 + 5])
+                tier_info.append(
+                    {
+                        "tier": t,
+                        "rank_from": start + 1,
+                        "rank_to": end,
+                        "top_pct_from": round(100.0 * start / n, 1),
+                        "top_pct_to": round(100.0 * end / n, 1),
+                    }
+                )
+
+        def _row(i: int, label: str):
+            return {**rows[int(i)], "_anomaly_score": round(float(scores[i]), 3), "_selection": label}
+
+        top_rows = [_row(i, "top_anomalous") for i in top_idx]
+        tier_rows = [[_row(i, f"tier_{ti['tier']}") for i in picks] for ti, picks in zip(tier_info, tier_picks)]
+        # round-robin across tiers, then 1:1 with the top rows: truncating the tail keeps every group represented
+        representative = [r for grp in zip_longest(*tier_rows) for r in grp if r is not None]
+        selected = []
+        for a, r in zip_longest(top_rows, representative):
+            if a is not None:
+                selected.append(a)
+            if r is not None:
+                selected.append(r)
+
+        if len(selected) >= n:  # nothing would be left out: show the rows as they are
+            return rows, info
+        info.update(
+            n_selected=len(selected),
+            n_top=len(top_rows),
+            n_representative=len(representative),
+            per_tier=_PER_TIER,
+            tiers=tier_info,
+            features_used=used,
+        )
         return selected, info
     except Exception as e:  # noqa: BLE001
         logger.warning("selection of anomalous rows failed, using all rows: %s", e)
@@ -216,7 +268,7 @@ def select_anomalous_rows(
         return rows, info
 
 
-def describe_selection(info: Dict[str, Any]) -> str:
+def describe_selection(info) -> str:
     """Note to precede the table shown in the template. Empty string if no selection was made."""
     if info.get("n_selected", 0) >= info.get("n_total", 0):
         return ""
@@ -224,10 +276,29 @@ def describe_selection(info: Dict[str, Any]) -> str:
     grouping = (
         f", relative to each {'/'.join(info['group_by'])}" if info.get("group_by") else ""
     )
+    tiers = info.get("tiers") or []
+    if tiers:
+        tier_txt = "; ".join(
+            f"tier_{t['tier']} = rows ranked {t['rank_from']}-{t['rank_to']} "
+            f"(top {t['top_pct_from']}%-{t['top_pct_to']}% most unusual)"
+            for t in tiers
+        )
+        tier_note = (
+            f"- `tier_1` ... `tier_{len(tiers)}`: the remaining rows, ranked by unusualness, are split into "
+            f"{len(tiers)} equal-size tiers; for each tier the {info.get('per_tier')} highest-score rows are shown. "
+            f"tier_1 is just below the most unusual rows and tier_{len(tiers)} is the most typical region of the data "
+            f"({tier_txt}).\n"
+        )
+    else:
+        tier_note = ""
     return (
-        f"**Note:** the query returned {info['n_total']} rows. Only the {info['n_selected']} most "
-        f"anomalous rows are shown below ( measures: {used}{grouping}), "
-        f"sorted by `_anomaly_score`, most unusual first (higher = more unusual). This is NOT a representative sample: "
-        f"do not infer trends, averages or totals from these rows. Descriptive statistics computed on "
-        f"all rows appear in the Summary Statistics section, when present."
+        f"**Note:** the query returned {info['n_total']} rows. Only {info['n_selected']} are shown, marked in the "
+        f"`_selection` column (measures used for the score: {used}{grouping}):\n"
+        f"- `top_anomalous`: the {info.get('n_top', info['n_selected'])} MOST unusual rows (highest `_anomaly_score` = "
+        f"most unusual). They are extremes by construction.\n"
+        f"{tier_note}"
+        f"Rows of the two groups are interleaved, so the table is not ordered by score. Neither group is a random "
+        f"sample of all rows: do not infer trends, averages, shares or totals from these rows, and do not describe the "
+        f"extremes as typical. Descriptive statistics computed on all rows appear in the Summary Statistics section, "
+        f"when present."
     )
