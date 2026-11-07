@@ -831,6 +831,50 @@ def draft_section(
     return out
 
 
+_SENT_ABBREV = {
+    "u.s", "u.n", "u.k", "e.g", "i.e", "etc", "vs", "approx", "no", "st", "dr", "mr", "mrs", "ms",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "gen", "col", "lt", "sgt", "cf",
+}
+_SENT_BOUNDARY = re.compile(r'[.!?]["\u201d\u2019)]*(?:\[\d+\])*(?=\s+(?:[A-Z0-9"\u201c(]|\[)|\s*$)')
+
+
+def _split_sentences(text: str) -> List[str]:
+    """Split markdown into sentences (per paragraph), keeping inline citations attached to their sentence."""
+    sentences: List[str] = []
+    for para in re.split(r"\n+", text or ""):
+        para = para.strip()
+        if not para:
+            continue
+        start = 0
+        for m in _SENT_BOUNDARY.finditer(para):
+            if para[m.start()] == ".":
+                prev = re.search(r"([A-Za-z.]+)$", para[start:m.start()])
+                word = prev.group(1).lower().rstrip(".") if prev else ""
+                if word in _SENT_ABBREV or (len(word) == 1 and word.isalpha()):
+                    continue
+            sentences.append(para[start:m.end()].strip())
+            start = m.end()
+        tail = para[start:].strip()
+        if tail:
+            sentences.append(tail)
+    return sentences
+
+
+def _build_fact_check_tasks(section_markdown: str, citation_id_to_text: Dict[int, str]) -> List[Tuple[str, List[int]]]:
+    tasks: List[Tuple[str, List[int]]] = []
+    for sent in _split_sentences(section_markdown):
+        sent = re.sub(r"^\s*(?:[-*\u2022]|\d+[.)])\s+", "", sent)
+        ids: List[int] = []
+        for n in re.findall(r"\[(\d+)\]", sent):
+            n = int(n)
+            if n in citation_id_to_text and n not in ids:
+                ids.append(n)
+        if ids and len(sent.split()) >= 4:
+            tasks.append((sent, ids))
+    return tasks
+
+
 class EntailmentCheck(BaseModel):
     is_entailed: bool
     issue: str  # empty string if entailed, description of problem if not
@@ -876,38 +920,8 @@ def fact_check_section(
     if not citation_id_to_text:
         return drafted, {"total_checked": 0, "issues_found": 0}
 
-    # Parse section_markdown into (sentence, citation_ids) tasks
-    parts = re.split(r'(\[\d+\])', drafted.section_markdown)
-    tasks: List[Tuple[str, List[int]]] = []
-    i = 0
-    while i < len(parts) - 1:
-        text_chunk = parts[i]
-        citation_token = parts[i + 1]
-        if not text_chunk.strip():
-            i += 2
-            continue
-        m = re.match(r'\[(\d+)\]', citation_token)
-        if not m:
-            i += 2
-            continue
-        N = int(m.group(1))
-        if N not in citation_id_to_text:
-            i += 2
-            continue
-        sentence = text_chunk + citation_token
-        indices = [N]
-        j = i + 2
-        while j + 1 < len(parts) and not parts[j].strip():
-            cm = re.match(r'\[(\d+)\]', parts[j + 1])
-            if not cm:
-                break
-            sentence += parts[j + 1]
-            extra_N = int(cm.group(1))
-            if extra_N in citation_id_to_text:
-                indices.append(extra_N)
-            j += 2
-        tasks.append((sentence, indices))
-        i += 2
+    # Parse section_markdown into (sentence, citation_ids) tasks: one task per full sentence
+    tasks = _build_fact_check_tasks(drafted.section_markdown, citation_id_to_text)
 
     if not tasks:
         return drafted, {"total_checked": 0, "issues_found": 0}

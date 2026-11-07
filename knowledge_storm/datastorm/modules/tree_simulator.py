@@ -31,17 +31,20 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 js_dir = os.path.abspath(os.path.join(script_dir, "../../../display_javascripts"))
 CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
 
+
 class RerankBestInsightsPreemptModel(BaseModel):
-    node_id: str # random uuid
+    node_id: str  # random uuid
     insight: str
+
 
 class RerankBestInsightsPreemptResponse(BaseModel):
     results: List[RerankBestInsightsPreemptModel]
-    
+
+
 class ExpandNodeResponseExploration(BaseModel):
     # Choose exactly ONE action
-    is_specific_question: bool      # True if asking specific questions
-    is_explore_all_columns: bool    # True if calling explore_all_columns
+    is_specific_question: bool  # True if asking specific questions
+    is_explore_all_columns: bool  # True if calling explore_all_columns
 
     # Only if is_specific_question is True
     chain_of_thought: Optional[str]
@@ -50,55 +53,70 @@ class ExpandNodeResponseExploration(BaseModel):
     # Only if is_explore_all_columns is True
     explore_all_columns: Optional[str]  # SQL for explore_all_columns(sql: str)
 
+
 class ExpandNodeResponseSQL(BaseModel):
     chain_of_thought: str
     sql: str
-    
+
+
 class ExpandNodeResponseSQLList(BaseModel):
     questions: List[ExpandNodeResponseSQL]
+
 
 class ExpandNodeResponse(BaseModel):
     chain_of_thought: str
     questions: List[str]
 
+
 class ExpandNodeQuestionWithDestination(BaseModel):
     question: str
     destination: str  # "internet" or "database"
+
 
 class ExpandNodeResponseWithRouting(BaseModel):
     chain_of_thought: str
     questions: List[ExpandNodeQuestionWithDestination]
 
+
 class ThesisCandidate(BaseModel):
     thesis: str
     research_strategy: str
 
+
 class ThesisGenerationResponse(BaseModel):
     theses: List[ThesisCandidate]
+
 
 class ThesisRefinementResponse(BaseModel):
     thesis: str
     research_strategy: str
+
 
 class FinalInsightsConsolidationModel(BaseModel):
     consolidated_from: List[str]
     consolidated_insight: str
     query: str
 
+
 class FinalInsightsConsolidationResponse(BaseModel):
     insights: List[FinalInsightsConsolidationModel]
+
 
 class SummarizeModel(BaseModel):
     summary: str
 
+
 class FollowUpQuestionsModel(BaseModel):
     text: str
+
 
 class FinalReportResponse(BaseModel):
     report: str
 
+
 class GraphGenerationResponse(BaseModel):
     python_code: str
+
 
 def construct_conv(dialogue_turns: List[DialogueTurn]):
     conv = []
@@ -114,8 +132,33 @@ def construct_conv(dialogue_turns: List[DialogueTurn]):
     conv = "\n".join(conv)
     conv = conv.strip() or "N/A"
     conv = ArticleTextProcessing.limit_word_count_preserve_newline(conv, 2500)
-    
+
     return conv
+
+
+_NOOP_FOLLOWUP_PATTERNS = [
+    re.compile(r"\bno (?:further )?changes?\b[^.]{0,30}\b(?:needed|required|necessary)"),
+    re.compile(r"\bno need to (?:change|modify|re-?run|rewrite)"),
+]
+_FROM_TO = re.compile(
+    r"from\s+(date\s*'[^']+'|'[^']+'|\S+)\s+to\s+(date\s*'[^']+'|'[^']+'|\S+)"
+)
+
+
+def _is_noop_followup(follow_up: str, original: str) -> bool:
+    """True if a QC follow-up changes nothing (same text as the node, 'no change needed', 'from X to X')."""
+    t = " ".join(str(follow_up or "").lower().split())
+    if not t:
+        return False
+    if t == " ".join(str(original or "").lower().split()):
+        return True
+    if any(p.search(t) for p in _NOOP_FOLLOWUP_PATTERNS):
+        return True
+    for a, b in _FROM_TO.findall(t):
+        if a.strip(" .,;") == b.strip(" .,;"):
+            return True
+    return False
+
 
 class TreeSimulator(dspy.Module):
     def __init__(
@@ -125,16 +168,17 @@ class TreeSimulator(dspy.Module):
             retriever: Retriever,
             max_search_queries_per_turn: int,
             search_top_k: int,
-            max_tree_depth = 3,
-            first_level_questions: List[str] = [], # If first_level_questions is present, set the first level questions to be these
-            each_level_population_control_num = 5,
+            max_tree_depth=3,
+            first_level_questions: List[str] = [],
+            # If first_level_questions is present, set the first level questions to be these
+            each_level_population_control_num=5,
             max_global_insights: int = 30,
-            expansion_max_questions = 5,
-            db_description = None,
-            enable_followups = True,
-            generate_graphs = True,
+            expansion_max_questions=5,
+            db_description=None,
+            enable_followups=True,
+            generate_graphs=True,
             disable_upload_to_azure=False,
-            consolidate_insights = False,
+            consolidate_insights=False,
             langfuse_readonly: bool = False,
             internet_retriever: Optional[Retriever] = None,
             thesis_generation_depth: int = 3,
@@ -142,7 +186,7 @@ class TreeSimulator(dspy.Module):
             use_global_insight_expansion: bool = True,
             skip_thesis: bool = False,
             datastorm_main_model: str = "gpt-5",
-        ):
+    ):
         super().__init__()
         self.datastorm_main_model = datastorm_main_model
         self.use_global_insight_expansion = use_global_insight_expansion
@@ -169,12 +213,12 @@ class TreeSimulator(dspy.Module):
             retriever=retriever,
             internet_retriever=internet_retriever,
         )
-        
+
         self.root = TreeNode()
         self.to_expand = set([self.root])
         self.first_level_questions = first_level_questions
-        
-        self.global_insights = {} # {node_id: summary str}
+
+        self.global_insights = {}  # {node_id: summary str}
         self.max_global_insights = max_global_insights
         self.db_description = db_description
         self.warmstart_context: Optional[str] = None
@@ -183,7 +227,7 @@ class TreeSimulator(dspy.Module):
         self.generate_graphs = generate_graphs
         self.consolidate_insights = consolidate_insights
         self.langfuse_readonly = langfuse_readonly
-        
+
         self.final_selected_res: List[DialogueTurn] = []
         self.failed_queries: List[dict] = []
         self.asked_questions: set = set()  # query/SQL already asked
@@ -202,7 +246,7 @@ class TreeSimulator(dspy.Module):
         tree_data["expansion_mode"] = "global_insight" if self.use_global_insight_expansion else "per_node"
         with open(output_dir, 'w', encoding='utf-8') as f:
             json.dump(tree_data, f, indent=2, ensure_ascii=False)
-    
+
     async def summarize_node(self, node: TreeNode, previous_observation: str = None):
         """
         Summarize the node using the summarize_consolidate_module
@@ -221,14 +265,14 @@ class TreeSimulator(dspy.Module):
             langfuse_readonly=self.langfuse_readonly,
         )
         return result.summary if result else None
-    
+
     async def consolidate_global_insights(self, topic: str):
         """
         Consolidate global insights from the tree by consolidating
         insights from lowest level nodes + insights already in self.global_insights.
         """
         lowest_level_nodes = self.root.get_lowest_level_nodes(exclude_no_results=False)
-        
+
         # if number of lowest level nodes + self.global_insights <= self.max_global_insights
         if len(lowest_level_nodes) + len(self.global_insights) <= self.max_global_insights:
             self.global_insights.update({
@@ -236,13 +280,13 @@ class TreeSimulator(dspy.Module):
             })
         else:
             llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
-            
+
             rerank_input = self.global_insights.copy()
             rerank_input.update({
                 node.node_id: node.dlg_turn.summary
                 for node in lowest_level_nodes
             })
-            
+
             # Retry up to 2 times when rerank_output is None (3 attempts total)
             rerank_output = None
             for _attempt in range(3):
@@ -267,7 +311,7 @@ class TreeSimulator(dspy.Module):
                 logging.error("rerank_output is None after retries; falling back to top max_global_insights entries")
                 self.global_insights = dict(list(rerank_input.items())[:self.max_global_insights])
                 return
-            
+
             print(f"rerank_output: {rerank_output}")
             # Convert list of model objects to dict mapping node_id to summary (always use the node's own summary)
             rerank_output_dict = {result.node_id: rerank_input[result.node_id] for result in rerank_output.results if
@@ -279,10 +323,10 @@ class TreeSimulator(dspy.Module):
                 if self.root.get_node_by_id(key) is None:
                     logging.warning(f"node {key} not found in the tree")
                     not_found_nodes.append(key)
-            
+
             if not_found_nodes:
                 logging.warning(f"attempting to fix nodes that are not found in the tree: {not_found_nodes}")
-                
+
                 # Retry up to 2 times when rerank_output is None (3 attempts total)
                 fixed_rerank_output = None
                 for _attempt in range(3):
@@ -311,11 +355,12 @@ class TreeSimulator(dspy.Module):
                         fixed_rerank_output.results if result.node_id in rerank_input}
                 else:
                     logging.error("fix rerank call returned None after retries; keeping previous rerank_output_dict")
-            
+
             self.global_insights = rerank_output_dict
-            
-            print(f"consolidate_global_insights: Updated global insights to a total of {len(self.global_insights)} insights")            
-    
+
+            print(
+                f"consolidate_global_insights: Updated global insights to a total of {len(self.global_insights)} insights")
+
     async def generate_thesis(self, topic: str, depth: int = 0, event_type: str = "generation"):
         llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
 
@@ -417,24 +462,24 @@ class TreeSimulator(dspy.Module):
             return False
         self.asked_questions.add(key)
         return True
-    
+
     async def expand_once(
-        self,
-        topic: str,
-        ground_truth_url: str,
-        callback_handler: BaseCallbackHandler,
-        user_utterances: List[str] = [],
-        inner_expansion_max_worker = None,
-        outer_expansion_max_worker = None,
-        database_description = None,
+            self,
+            topic: str,
+            ground_truth_url: str,
+            callback_handler: BaseCallbackHandler,
+            user_utterances: List[str] = [],
+            inner_expansion_max_worker=None,
+            outer_expansion_max_worker=None,
+            database_description=None,
     ):
         """
         Performs one BST expand operation.
         """
         next_turn_to_expand = set()
-        
+
         llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
-        
+
         async def process_node(node):
             nonlocal user_utterances
             if not user_utterances:
@@ -448,7 +493,7 @@ class TreeSimulator(dspy.Module):
                     "thesis": self.current_thesis or "",
                     "research_strategy": self.current_research_strategy or "",
                 }
-                
+
                 if node.result_count != -1 and node.result_count <= 20:
                     question_prompt = "expand_node_exploration_question_gen"
                 else:
@@ -471,7 +516,13 @@ class TreeSimulator(dspy.Module):
                     ),
                 )
                 user_utterances = []
-                for q in generated_list.questions:
+                if generated_list is None:
+                    logging.warning(
+                        "expand_once: question expansion returned no output (LLM call failed); skipping it for this node.")
+                if direct_sql_gen_list is None:
+                    logging.warning(
+                        "expand_once: direct-SQL expansion returned no output (LLM call failed); skipping it for this node.")
+                for q in (generated_list.questions if generated_list is not None else []):
                     dest = q.destination.lower().strip()
                     if dest == "internet" and self.internet_retriever is not None:
                         designation = "internet"
@@ -480,10 +531,10 @@ class TreeSimulator(dspy.Module):
                     user_utterances.append({"question": q.question, "designation": designation})
                 user_utterances += [
                     {
-                        "question": direct_sql_gen.sql, # this should just be a SELECT * SQL query
+                        "question": direct_sql_gen.sql,  # this should just be a SELECT * SQL query
                         "designation": "SQL"
                     }
-                    for direct_sql_gen in direct_sql_gen_list.questions
+                    for direct_sql_gen in (direct_sql_gen_list.questions if direct_sql_gen_list is not None else [])
                 ]
             else:
                 user_utterances = [{
@@ -493,7 +544,6 @@ class TreeSimulator(dspy.Module):
                 for _u in user_utterances:
                     self._register_question(_u["question"])
 
-                            
             children = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=inner_expansion_max_worker) as executor:
                 future_to_utterance = {
@@ -506,7 +556,7 @@ class TreeSimulator(dspy.Module):
                     ): user_utterance
                     for user_utterance in user_utterances
                 }
-            
+
                 for future in concurrent.futures.as_completed(future_to_utterance):
                     user_utterance = future_to_utterance[future]
                     try:
@@ -530,49 +580,53 @@ class TreeSimulator(dspy.Module):
                         else node.conversation_history
                     )
                     new_node = TreeNode(
-                            agent_utterance=expert_output.answer,
-                            user_utterance=user_utterance["question"],
-                            search_queries=expert_output.queries,
-                            search_results=expert_output.searched_results,
-                            conversation_history=conv_hist,
-                            result_count = expert_output.searched_results[0].result_count if expert_output.searched_results else -1,
-                            parent = node,
-                            depth = node.depth + 1,
-                        )
-                    print(f"Completed processing for user utterance: {user_utterance['question']} with designation: {user_utterance['designation']}")
+                        agent_utterance=expert_output.answer,
+                        user_utterance=user_utterance["question"],
+                        search_queries=expert_output.queries,
+                        search_results=expert_output.searched_results,
+                        conversation_history=conv_hist,
+                        result_count=expert_output.searched_results[
+                            0].result_count if expert_output.searched_results else -1,
+                        parent=node,
+                        depth=node.depth + 1,
+                    )
+                    print(
+                        f"Completed processing for user utterance: {user_utterance['question']} with designation: {user_utterance['designation']}")
                     children.append(new_node)
 
             node.children = children
-            return set(children)    
+            return set(children)
 
-        # Use asyncio.gather to run all process_node tasks concurrently
+            # Use asyncio.gather to run all process_node tasks concurrently
+
         tasks = []
         for node in self.to_expand:
             tasks.append(process_node(node))
-        
+
         results = await asyncio.gather(*tasks)
         children_to_cleanup = set()
         for result in results:
             children_to_cleanup = children_to_cleanup.union(result)
-        
+
         # clean up these new level nodes by issuing followup queries
         cleaned_up_children = await self.followups_to_clean_one_level(
-            list(children_to_cleanup), 
-            topic, 
+            list(children_to_cleanup),
+            topic,
             ground_truth_url,
             enable_followups=self.enable_followups,
         )
-        
+
         next_turn_to_expand = set(cleaned_up_children)
-    
+
         self.save_tree_to_disk()
-        
-        print(f"Generated a total of {len(next_turn_to_expand)} new frontier nodes from {len(self.to_expand)} frontier nodes")
+
+        print(
+            f"Generated a total of {len(next_turn_to_expand)} new frontier nodes from {len(self.to_expand)} frontier nodes")
         self.to_expand = next_turn_to_expand
-        
+
         # Run all async operations concurrently
         await self.consolidate_global_insights(topic)
-        
+
         # Filter frontier nodes
         prior_to_filter_len = len(self.to_expand)
         self.to_expand = await self.listwise_llm_rerank(
@@ -582,17 +636,19 @@ class TreeSimulator(dspy.Module):
         )
         post_to_filter_len = len(self.to_expand)
         if list(self.to_expand):
-            print(f"Filtering depth {list(self.to_expand)[0].depth} nodes. Filtered from {prior_to_filter_len} to {post_to_filter_len} number of nodes")
+            print(
+                f"Filtering depth {list(self.to_expand)[0].depth} nodes. Filtered from {prior_to_filter_len} to {post_to_filter_len} number of nodes")
         else:
-            print(f"Filtering depth N/A nodes (no available nodes). Filtered from {prior_to_filter_len} to {post_to_filter_len} number of nodes")
-    
+            print(
+                f"Filtering depth N/A nodes (no available nodes). Filtered from {prior_to_filter_len} to {post_to_filter_len} number of nodes")
+
     async def expand_from_global_insights(
-        self,
-        topic: str,
-        ground_truth_url: str,
-        callback_handler: BaseCallbackHandler,
-        current_depth: int,
-        inner_expansion_max_worker=None,
+            self,
+            topic: str,
+            ground_truth_url: str,
+            callback_handler: BaseCallbackHandler,
+            current_depth: int,
+            inner_expansion_max_worker=None,
     ):
         """
         Generates the next batch of questions using only the global insight bank,
@@ -711,11 +767,13 @@ class TreeSimulator(dspy.Module):
                     search_queries=expert_output.queries,
                     search_results=expert_output.searched_results,
                     conversation_history=conv_hist,
-                    result_count=expert_output.searched_results[0].result_count if expert_output.searched_results else -1,
+                    result_count=expert_output.searched_results[
+                        0].result_count if expert_output.searched_results else -1,
                     parent=self.root,
                     depth=current_depth + 2,
                 )
-                print(f"Completed processing for user utterance: {user_utterance['question']} with designation: {user_utterance['designation']}")
+                print(
+                    f"Completed processing for user utterance: {user_utterance['question']} with designation: {user_utterance['designation']}")
                 children.append(new_node)
 
         self.root.children.extend(children)
@@ -727,7 +785,8 @@ class TreeSimulator(dspy.Module):
             enable_followups=self.enable_followups,
         )
 
-        print(f"Generated {len(cleaned_up_children)} new nodes from global insight-driven expansion at depth {current_depth + 2}")
+        print(
+            f"Generated {len(cleaned_up_children)} new nodes from global insight-driven expansion at depth {current_depth + 2}")
 
         self.save_tree_to_disk()
         await self.consolidate_global_insights(topic)
@@ -736,9 +795,9 @@ class TreeSimulator(dspy.Module):
         """
         Rerank the nodes by feeding in a list to an LLM.
         """
-        nodes = list(nodes) # node as set type, explicit casting
+        nodes = list(nodes)  # node as set type, explicit casting
         llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
-        
+
         listwise_llm_rerank_input = {
             node.node_id: node.dlg_turn.summary
             for node in nodes if node.dlg_turn.summary
@@ -757,7 +816,7 @@ class TreeSimulator(dspy.Module):
             llm,
             langfuse_readonly=self.langfuse_readonly,
         )
-            
+
         # The rerank LLM call can return None (e.g. a content-policy violation on
         # sensitive conflict topics, or repeated parse failure). Don't crash the
         # whole run on None.results — fall back to keeping the first cut_off_num
@@ -773,54 +832,64 @@ class TreeSimulator(dspy.Module):
         res_nodes = [node for node in nodes if node.node_id in res]
 
         return res_nodes
-    
-        
+
     async def followups_to_clean_one_level(
-        self,
-        nodes: List[TreeNode],
-        topic: str,
-        ground_truth_url: str,
-        enable_followups = False,
+            self,
+            nodes: List[TreeNode],
+            topic: str,
+            ground_truth_url: str,
+            enable_followups=False,
     ):
         """
         Sometimes, one node was unable to return results but its peer nodes were able to return results.
         This could be due to Datatalk not following all instructions in the current node (but its peer node was able to).
         For instance, in the current node it might just do (actor1 LIKE '%ISIS%' OR actor2 LIKE '%ISIS%') to filter ISIS activities, but the correct one would be to use the entity_linking module.
         Probabilistically, most of the nodes can, but this raises the question of how to make them consistent on the same level w.r.t. the filters being used.
-        
+
         This function takes a look at all the reported SQLs and attempt to consolidate them.
-        
+
         Returns:
             a new list of TreeNodes that are follow-up questions to their parents.
         """
-        
+
         # Helper function to remove consecutive duplicates
         def remove_consecutive_duplicates(items):
             result = []
             for i, item in enumerate(items):
-                if i == 0 or item != items[i-1]:
+                if i == 0 or item != items[i - 1]:
                     result.append(item)
             return result
-        
-        def get_reference_nodes_json():
-            result = {}
 
-            for i, (node_id, _) in enumerate(self.global_insights.items()):
+        def get_reference_nodes_json():
+            # Reference examples for the QC prompt. Without a cap they grow to 30 nodes (65-89k chars of input):
+            # dedupe by SQL and keep only the most recent ones (deepest levels).
+            max_examples = int(os.getenv("DATASTORM_QC_MAX_EXAMPLES", "10"))
+            examples = []
+            seen_sql = set()
+            for node_id in self.global_insights:
                 node = self.root.get_node_by_id(node_id)
                 if node is None or not node.dlg_turn.search_results:
                     continue
-                
+
                 # if the node is a follow-up question, include the parent question in the query
                 query = node.parent.dlg_turn.user_utterance + "\n" + node.dlg_turn.user_utterance if node.is_follow_up else node.dlg_turn.user_utterance
+                sql = node.dlg_turn.search_results[0].meta.get("preprocessed_sql", "N/A")
+                key = " ".join(str(sql).split())
+                if key in seen_sql:
+                    continue
+                seen_sql.add(key)
+                examples.append((query, sql))
+
+            result = {}
+            for i, (query, sql) in enumerate(examples[-max_examples:]):
                 result[f"example_node_{i}"] = {
                     "query": query,
-                    "SQL": node.dlg_turn.search_results[0].meta.get("preprocessed_sql", "N/A"),
+                    "SQL": sql,
                     "example_node": True,
                     "note": "no need to generate follow_up_question, shown here only as reference"
                 }
             return result
-            
-            
+
         llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
         nodes_look_up_dict = {
             f"query{i}": node
@@ -838,21 +907,23 @@ class TreeSimulator(dspy.Module):
             set() if os.getenv("DATASTORM_QC_ON_SQL_NODES") == "1"
             else {k for k, n in nodes_look_up_dict.items() if _is_direct_sql(n)}
         )
-        
+
         if enable_followups:
             input_json = get_reference_nodes_json()
-            
+
             input_json.update({
                 f"query{i}": {
-                    "previous_queries": remove_consecutive_duplicates([node.user_utterance for node in node.reconstruct_dialog_history()]),
+                    "previous_queries": remove_consecutive_duplicates(
+                        [node.user_utterance for node in node.reconstruct_dialog_history()]),
                     "query": node.dlg_turn.user_utterance,
-                        "SQL": node.dlg_turn.search_results[0].meta.get("preprocessed_sql", "N/A") if node.dlg_turn.search_results else None
-                    }
-                    for i, node in enumerate(nodes)
-                    if f"query{i}" not in direct_sql_keys
+                    "SQL": node.dlg_turn.search_results[0].meta.get("preprocessed_sql",
+                                                                    "N/A") if node.dlg_turn.search_results else None
                 }
+                for i, node in enumerate(nodes)
+                if f"query{i}" not in direct_sql_keys
+            }
             )
-            
+
             result = await call_llm_with_structured_output(
                 "followups_to_clean_one_level",
                 {
@@ -884,6 +955,14 @@ class TreeSimulator(dspy.Module):
                 )
                 res = {}
 
+            # Drop follow-ups that change nothing (same text, "no change needed", "from X to X"):
+            # each of them costs a full episode and a summarize call. The node is copied instead.
+            for _k, _v in list(res.items()):
+                if isinstance(_v, dict) and _v.get("follow_up_question") and _k in nodes_look_up_dict:
+                    if _is_noop_followup(_v["follow_up_question"], nodes_look_up_dict[_k].dlg_turn.user_utterance):
+                        print(f"  [qc] no-op follow-up discarded for {_k}: {str(_v['follow_up_question'])[:90]}")
+                        res[_k] = {"follow_up_question": None}
+
             # Unresolved LLM nodes (or those skipped due to direct SQL): copied without follow-up.
             # Previously, they were silently dropped from the frontier.
             for _k in nodes_look_up_dict:
@@ -908,8 +987,8 @@ class TreeSimulator(dspy.Module):
                     key = future_to_key[future]
                     try:
                         expert_output = future.result()
-                        
-                        searched_results : List[Information] = expert_output.searched_results
+
+                        searched_results: List[Information] = expert_output.searched_results
                         if searched_results:
                             searched_results[0].meta["query"] = nodes_look_up_dict[key].dlg_turn.user_utterance
 
@@ -919,7 +998,8 @@ class TreeSimulator(dspy.Module):
                             user_utterance=user_utterance,
                             search_queries=expert_output.queries,
                             search_results=searched_results,
-                            conversation_history=searched_results[0].conversation_history if searched_results else nodes_look_up_dict[key].conversation_history,
+                            conversation_history=searched_results[0].conversation_history if searched_results else
+                            nodes_look_up_dict[key].conversation_history,
                             result_count=searched_results[0].result_count if searched_results else -1,
                             parent=nodes_look_up_dict[key],
                             depth=nodes_look_up_dict[key].depth + 1,
@@ -946,7 +1026,7 @@ class TreeSimulator(dspy.Module):
                 new_node.depth += 1
                 new_node.regenerate_node_id()
                 all_new_nodes[key] = new_node
-                
+
         for key, new_node in all_new_nodes.items():
             # Summarize the node from its SQL result. This is REQUIRED regardless of
             # enable_followups: the global-insight selection (consolidate_global_insights
@@ -967,9 +1047,9 @@ class TreeSimulator(dspy.Module):
             new_node.is_follow_up = True
 
             nodes_look_up_dict[key].children = [new_node]
-        
+
         return list(all_new_nodes.values())
-        
+
     async def generate_graph_from_node_matplotlib(self, node: TreeNode):
         """
         Generate a matplotlib PNG plot for a given node using the sandbox-execution visualization approach.
@@ -1223,14 +1303,14 @@ class TreeSimulator(dspy.Module):
             python_code = python_code[len("```python"):].strip()
         elif python_code.startswith("```"):
             python_code = python_code[len("```"):].strip()
-            
+
         if python_code.endswith("```"):
             python_code = python_code[:-len("```")].strip()
-        
+
         save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../python_executions')
         # Create directory for saving code and results if it doesn't exist
         os.makedirs(save_dir, exist_ok=True)
-        
+
         csv_file_path = node.dlg_turn.search_results[0].meta["csv_path"]
         if not csv_file_path:
             print(f"CSV file for {node.dlg_turn.user_utterance} does not exist")
@@ -1242,13 +1322,13 @@ class TreeSimulator(dspy.Module):
         else:
             print(f"Warning: CSV file {csv_file_path} does not end with .csv")
             html_file_path = csv_file_path + ".html"
-        
+
         # Save the Python code to a file
         code_file_path = os.path.join(save_dir, f'code_{execution_id}.py')
         with open(code_file_path, 'w') as f:
             f.write(f"# Associated CSV file: {node.dlg_turn.search_results[0].meta['csv_path']}\n\n")
             f.write(python_code)
-        
+
         res = execute_python_script(python_code)
         # Same defensive handling as the matplotlib path above: execute_python_script
         # can return {"error": ...} without "stdout"/"stderr" (e.g. on timeout or if
@@ -1265,25 +1345,25 @@ class TreeSimulator(dspy.Module):
             f.write(f'# Associated CSV file: {node.dlg_turn.search_results[0].meta["csv_path"]}\n\n')
             f.write(f"# Code executed:\n{python_code}\n\n")
             f.write(f"# Output:\n{output}")
-        
+
         print(f"Python code and output saved to {code_file_path}")
-        
+
         # check if the HTML file has been generated
-        
+
         if not os.path.exists(html_file_path):
             print(f"HTML file {html_file_path} not found")
             return None
         else:
             return html_file_path
-    
+
     async def final_consolidate_insights(self):
         """
             Consolidate the insights from the global insights at the end
-            
+
             The goal is to consolidate any insights that can be combined into one SQL result.
         """
         llm = get_llm(model_name=self.datastorm_main_model, temperature=0)
-        
+
         insights_json = {}
         i = 0
         insight_node_mapping = {}
@@ -1291,7 +1371,7 @@ class TreeSimulator(dspy.Module):
             insights_json_key = f"insight_{i}"
             node = self.root.get_node_by_id(node_id)
             insight_node_mapping[insights_json_key] = node
-            
+
             insights_json_value = {
                 "summary": node.dlg_turn.summary,
                 "sql": node.dlg_turn.search_results[0].meta.get("preprocessed_sql", "N/A"),
@@ -1299,7 +1379,7 @@ class TreeSimulator(dspy.Module):
             }
             insights_json[insights_json_key] = insights_json_value
             i += 1
-        
+
         res = await call_llm_with_structured_output(
             "final_insights_consolidation",
             {
@@ -1309,30 +1389,33 @@ class TreeSimulator(dspy.Module):
             llm,
             langfuse_readonly=self.langfuse_readonly,
         )
-        
+
         print(res.insights)
-        print(f"final_consolidate_insights: consolidated from {len(self.global_insights)} insights to {len(res.insights)} insights")
+        print(
+            f"final_consolidate_insights: consolidated from {len(self.global_insights)} insights to {len(res.insights)} insights")
         self.global_insights = {}
-        
+
         # Keep track of which insights from the original mapping are used
         used_insight_keys = set()
         for insight in res.insights:
             # Check if any consolidated_from IDs are not in the insight_node_mapping
-            invalid_insight_ids = [insight_id for insight_id in insight.consolidated_from if insight_id not in insight_node_mapping]
+            invalid_insight_ids = [insight_id for insight_id in insight.consolidated_from if
+                insight_id not in insight_node_mapping]
             if invalid_insight_ids:
                 print(f"WARNING: The following insight IDs were not found in the mapping: {invalid_insight_ids}")
                 # Keep only the valid IDs
-                valid_insight_ids = [insight_id for insight_id in insight.consolidated_from if insight_id in insight_node_mapping]
+                valid_insight_ids = [insight_id for insight_id in insight.consolidated_from if
+                    insight_id in insight_node_mapping]
                 if not valid_insight_ids:
                     print(f"ERROR: No valid insights found in {insight.consolidated_from}, skipping this consolidation")
                     continue
                 insight.consolidated_from = valid_insight_ids
-                
+
             # Track which insight keys are used
             used_insight_keys.update(insight.consolidated_from)
-            
-            nodes : List[TreeNode] = [insight_node_mapping[insight_id] for insight_id in insight.consolidated_from]
-            
+
+            nodes: List[TreeNode] = [insight_node_mapping[insight_id] for insight_id in insight.consolidated_from]
+
             if len(nodes) == 1:
                 self.global_insights[nodes[0].node_id] = nodes[0].dlg_turn.summary
                 nodes[0].is_final_selected = True
@@ -1341,7 +1424,7 @@ class TreeSimulator(dspy.Module):
                 sql_queries = []
                 for node in nodes:
                     sql_queries.append(node.dlg_turn.search_results[0].meta.get("preprocessed_sql", "N/A"))
-                
+
                 query = f"Combine the following SQL results into one: {sql_queries}. Give human readable column names (as opposed to just say the column was from the first query)"
                 # print(f"retrieving {query}")
                 conversation_history = []
@@ -1354,7 +1437,7 @@ class TreeSimulator(dspy.Module):
                                 node_conversation_history = node.conversation_history
                             assert type(node_conversation_history) == list
                             conversation_history.extend(node_conversation_history)
-                
+
                     searched_results: List[Information] = self.topic_expert.retriever.retrieve(
                         [query],
                         conversation_history=json.dumps(conversation_history)
@@ -1363,9 +1446,10 @@ class TreeSimulator(dspy.Module):
                     searched_results: List[Information] = self.topic_expert.retriever.retrieve(
                         [query],
                     )
-                
+
                 if not searched_results:
-                    print(f"WARNING: Failed to retrieve combined results for nodes: {[node.node_id for node in nodes]}. Adding individual insights instead.")
+                    print(
+                        f"WARNING: Failed to retrieve combined results for nodes: {[node.node_id for node in nodes]}. Adding individual insights instead.")
                     for node in nodes:
                         self.global_insights[node.node_id] = node.dlg_turn.summary
                         node.is_final_selected = True
@@ -1382,22 +1466,25 @@ class TreeSimulator(dspy.Module):
                         depth=nodes[0].depth + 1
                     )
                     nodes[0].children += [new_node]
-                    context = "This new result is based on a list of previous observations: " + ";".join([node.dlg_turn.summary for node in nodes])
+                    context = "This new result is based on a list of previous observations: " + ";".join(
+                        [node.dlg_turn.summary for node in nodes])
                     new_node.dlg_turn.summary = await self.summarize_node(new_node, previous_observation=context)
                     new_node.dlg_turn.agent_utterance = new_node.dlg_turn.summary
-                    new_node.dlg_turn.search_results[0].meta["consolidate_info"] = f"based on consolidated insights from {', '.join(node_ids)}. LLM-predicted consolidated insight (this is not used anywhere, just for information purpose): {insight.consolidated_insight}"
-                    
+                    new_node.dlg_turn.search_results[0].meta[
+                        "consolidate_info"] = f"based on consolidated insights from {', '.join(node_ids)}. LLM-predicted consolidated insight (this is not used anywhere, just for information purpose): {insight.consolidated_insight}"
+
                     # This query field is used by Co-STORM in its organization phase
                     new_node.dlg_turn.search_results[0].meta["query"] = insight.query
                     self.global_insights[new_node.node_id] = new_node.dlg_turn.summary
-            
+
             else:
                 print(f"final_consolidate_insights: node {insight.consolidated_from} not found in the tree")
-        
+
         # Add any insights that weren't included in the consolidated results
         unused_insight_keys = set(insight_node_mapping.keys()) - used_insight_keys
         if unused_insight_keys:
-            print(f"Found {len(unused_insight_keys)} insights that weren't included in the consolidated results. Adding them as individual insights.")
+            print(
+                f"Found {len(unused_insight_keys)} insights that weren't included in the consolidated results. Adding them as individual insights.")
             for key in unused_insight_keys:
                 node = insight_node_mapping[key]
                 if node and node.dlg_turn and node.dlg_turn.summary:
@@ -1407,12 +1494,12 @@ class TreeSimulator(dspy.Module):
                 else:
                     print(f"WARNING: Could not add unused insight {key} as it has invalid data")
         print(f"final_consolidate_insights: {len(self.global_insights)} insights left")
-    
+
     async def forward(
-        self,
-        topic: str,
-        ground_truth_url: str,
-        callback_handler: BaseCallbackHandler,
+            self,
+            topic: str,
+            ground_truth_url: str,
+            callback_handler: BaseCallbackHandler,
     ):
         """
             Performs the BST expansion up to self.max_tree_depth.
@@ -1433,9 +1520,9 @@ class TreeSimulator(dspy.Module):
             if completed_depth == self.thesis_generation_depth and self.current_thesis is None:
                 await self.generate_thesis(topic, depth=completed_depth)
             elif (
-                self.current_thesis is not None
-                and self.last_thesis_event_completed_depth is not None
-                and completed_depth - self.last_thesis_event_completed_depth >= self.thesis_refinement_interval
+                    self.current_thesis is not None
+                    and self.last_thesis_event_completed_depth is not None
+                    and completed_depth - self.last_thesis_event_completed_depth >= self.thesis_refinement_interval
             ):
                 await self.refine_thesis(topic, depth=completed_depth)
 
@@ -1458,9 +1545,9 @@ class TreeSimulator(dspy.Module):
                     if completed_depth == self.thesis_generation_depth and self.current_thesis is None:
                         await self.generate_thesis(topic, depth=completed_depth)
                     elif (
-                        self.current_thesis is not None
-                        and self.last_thesis_event_completed_depth is not None
-                        and completed_depth - self.last_thesis_event_completed_depth >= self.thesis_refinement_interval
+                            self.current_thesis is not None
+                            and self.last_thesis_event_completed_depth is not None
+                            and completed_depth - self.last_thesis_event_completed_depth >= self.thesis_refinement_interval
                     ):
                         await self.refine_thesis(topic, depth=completed_depth)
         else:
@@ -1476,15 +1563,15 @@ class TreeSimulator(dspy.Module):
                     if completed_depth == self.thesis_generation_depth and self.current_thesis is None:
                         await self.generate_thesis(topic, depth=completed_depth)
                     elif (
-                        self.current_thesis is not None
-                        and self.last_thesis_event_completed_depth is not None
-                        and completed_depth - self.last_thesis_event_completed_depth >= self.thesis_refinement_interval
+                            self.current_thesis is not None
+                            and self.last_thesis_event_completed_depth is not None
+                            and completed_depth - self.last_thesis_event_completed_depth >= self.thesis_refinement_interval
                     ):
                         await self.refine_thesis(topic, depth=completed_depth)
 
         if self.consolidate_insights:
             await self.final_consolidate_insights()
-        
+
         selected_res = []
         # Create tasks for parallel processing
         node_tasks = []
@@ -1495,7 +1582,7 @@ class TreeSimulator(dspy.Module):
             else:
                 node.is_final_selected = True
                 node_tasks.append((node, node_id))
-        
+
         # Process all generate_graph_from_node calls in parallel
         if node_tasks and self.generate_graphs:
             async def process_node(node):
@@ -1509,12 +1596,9 @@ class TreeSimulator(dspy.Module):
                     # never given `disable_upload_to_azure`, so this path runs
                     # even when the CLI flag is set; that is why it must not be
                     # fatal.
-                    html_file_path = await self.generate_graph_from_node(node)
-                    if html_file_path:
-                        node.dlg_turn.search_results[0].meta["html_file_path"] = html_file_path
+                    node.dlg_turn.search_results[0].meta["html_file_path"] = html_file_path
                 return node.dlg_turn
 
-            
             # Run all visualization tasks concurrently
             tasks = [process_node(node) for node, _ in node_tasks]
             dlg_turns = await asyncio.gather(*tasks)
@@ -1523,12 +1607,12 @@ class TreeSimulator(dspy.Module):
             if not self.generate_graphs:
                 print("Skipping graph generation as requested")
             selected_res = [node.dlg_turn for node, _ in node_tasks]
-        
+
         self.save_tree_to_disk()
-        
+
         self.final_selected_res = selected_res
         return dspy.Prediction(dlg_history=selected_res)
-    
+
     # For compatibility with existing code that expects a sync function
     def __call__(self, *args, **kwargs):
         loop = None
@@ -1536,10 +1620,10 @@ class TreeSimulator(dspy.Module):
             # Configure asyncio to use a new event loop
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+
             # Run the coroutine and get the result
             result = loop.run_until_complete(self.forward(*args, **kwargs))
-            
+
             return result
         except KeyboardInterrupt:
             print("\nInterrupted by user. Cleaning up...")
@@ -1551,22 +1635,22 @@ class TreeSimulator(dspy.Module):
                 try:
                     # Force garbage collection to help identify lingering objects
                     gc.collect()
-                    
+
                     # Find and properly close any HTTP client sessions
                     self._cleanup_http_clients(loop)
-                    
+
                     # Clean up all tasks
                     self._cleanup_tasks(loop)
-                    
+
                     # Shutdown async generators
                     with contextlib.suppress(Exception):
                         loop.run_until_complete(loop.shutdown_asyncgens())
-                    
+
                     # Shutdown default executor if possible
                     with contextlib.suppress(Exception):
                         if hasattr(loop, 'shutdown_default_executor'):
                             loop.run_until_complete(loop.shutdown_default_executor())
-                    
+
                     # Close the loop
                     loop.close()
                 except Exception as e:
@@ -1574,7 +1658,7 @@ class TreeSimulator(dspy.Module):
                 finally:
                     # Reset the event loop
                     asyncio.set_event_loop(None)
-    
+
     def _cleanup_http_clients(self, loop):
         """Find and properly close any HTTP clients."""
         # This is a best-effort attempt to clean up HTTP clients
@@ -1592,7 +1676,7 @@ class TreeSimulator(dspy.Module):
                             loop.run_until_complete(close_task)
                     except Exception:
                         pass  # Best effort only
-    
+
     def _cleanup_tasks(self, loop):
         """Cancel all running tasks in the loop."""
         with contextlib.suppress(Exception):
@@ -1601,7 +1685,6 @@ class TreeSimulator(dspy.Module):
                 # Cancel all tasks
                 for task in tasks:
                     task.cancel()
-                
+
                 # Wait for tasks to be cancelled
                 loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
-

@@ -1,4 +1,5 @@
 from knowledge_storm.utils import load_api_key
+
 load_api_key(toml_file_path='secrets.toml')
 
 import argparse
@@ -49,7 +50,8 @@ def extract_warmstart_evidence(conversation_history) -> List["WarmstartEvidenceI
         urls = []
         cited_infos = []
         if conv_turn.cited_info:
-            cited_items = conv_turn.cited_info.items() if isinstance(conv_turn.cited_info, dict) else enumerate(conv_turn.cited_info)
+            cited_items = conv_turn.cited_info.items() if isinstance(conv_turn.cited_info, dict) else enumerate(
+                conv_turn.cited_info)
             for _, info in cited_items:
                 url = getattr(info, 'url', '') or ''
                 if url:
@@ -62,6 +64,7 @@ def extract_warmstart_evidence(conversation_history) -> List["WarmstartEvidenceI
             cited_infos=cited_infos,
         ))
     return items
+
 
 # ----------------------------
 # Output directory helpers
@@ -128,11 +131,12 @@ openai_kwargs = {
 # strips the params gpt-5 rejects, so top_p above is ignored for this model.
 gpt_4 = OpenAIModel(model='gpt-5.1', max_tokens=3000, **openai_kwargs)
 
+
 def init_co_storm(topic: str,
                   retriever: str,
                   warmstart_max_num_experts: int = 3,
-                  warmstart_max_turn_per_experts: int=2,
-                  node_expansion_trigger_count: int=10,
+                  warmstart_max_turn_per_experts: int = 2,
+                  node_expansion_trigger_count: int = 10,
                   serper_query_params: Optional[dict] = None):
     lm_config: CollaborativeStormLMConfigs = CollaborativeStormLMConfigs()
     openai_kwargs = {
@@ -180,7 +184,7 @@ def init_co_storm(topic: str,
         case 'bing':
             rm = BingSearch(bing_search_api=os.getenv('BING_SEARCH_API_KEY'), k=runner_argument.retrieve_top_k)
         case 'you':
-             rm = YouRM(ydc_api_key=os.getenv('YDC_API_KEY'), k=runner_argument.retrieve_top_k)
+            rm = YouRM(ydc_api_key=os.getenv('YDC_API_KEY'), k=runner_argument.retrieve_top_k)
         case 'brave':
             rm = BraveRM(brave_search_api_key=os.getenv('BRAVE_API_KEY'), k=runner_argument.retrieve_top_k)
         case 'duckduckgo':
@@ -191,11 +195,13 @@ def init_co_storm(topic: str,
                 default_query_params.update(serper_query_params)
             rm = SerperRM(serper_search_api_key=os.getenv('SERPER_API_KEY'), query_params=default_query_params)
         case 'tavily':
-            rm = TavilySearchRM(tavily_search_api_key=os.getenv('TAVILY_API_KEY'), k=runner_argument.retrieve_top_k, include_raw_content=True)
+            rm = TavilySearchRM(tavily_search_api_key=os.getenv('TAVILY_API_KEY'), k=runner_argument.retrieve_top_k,
+                                include_raw_content=True)
         case 'searxng':
             rm = SearXNG(searxng_api_key=os.getenv('SEARXNG_API_KEY'), k=runner_argument.retrieve_top_k)
         case _:
-             raise ValueError(f'Invalid retriever: {retriever}. Choose either "bing", "you", "brave", "duckduckgo", "serper", "tavily", or "searxng"')
+            raise ValueError(
+                f'Invalid retriever: {retriever}. Choose either "bing", "you", "brave", "duckduckgo", "serper", "tavily", or "searxng"')
 
     costorm_runner = CoStormRunner(lm_config=lm_config,
                                    runner_argument=runner_argument,
@@ -205,35 +211,36 @@ def init_co_storm(topic: str,
 
     return costorm_runner
 
+
 def init_storm_runner(
-    output_dir,
-    questions,
-    max_tree_depth,
-    domain,
-    each_level_population_control_num,
-    max_global_insights: int = 30,
-    db_description=None,
-    expansion_max_questions=5,
-    enable_followups=True,
-    generate_graphs=True,
-    consolidate_insights=False,
-    disable_upload_to_azure: bool = False,
-    enable_python: bool = False,
-    langfuse_readonly: bool = False,
-    use_decomposition_agent_rm: bool = False,
-    article_dir_suffix: str = "",
-    internet_rm=None,
-    serper_search_params: Optional[dict] = None,
-    thesis_generation_depth: int = 3,
-    thesis_refinement_interval: int = 2,
-    skip_thesis: bool = False,
-    include_summary_stats: bool = True,
-    datatalk_engine: str = None,
-    datastorm_main_model: str = "gpt-5",
+        output_dir,
+        questions,
+        max_tree_depth,
+        domain,
+        each_level_population_control_num,
+        max_global_insights: int = 30,
+        db_description=None,
+        expansion_max_questions=5,
+        enable_followups=True,
+        generate_graphs=True,
+        consolidate_insights=False,
+        disable_upload_to_azure: bool = False,
+        enable_python: bool = False,
+        langfuse_readonly: bool = False,
+        use_decomposition_agent_rm: bool = False,
+        article_dir_suffix: str = "",
+        internet_rm=None,
+        serper_search_params: Optional[dict] = None,
+        thesis_generation_depth: int = 3,
+        thesis_refinement_interval: int = 2,
+        skip_thesis: bool = False,
+        include_summary_stats: bool = True,
+        datatalk_engine: str = None,
+        datastorm_main_model: str = "gpt-5",
 ):
     """
     Initialize the STORM Wiki runner with database-aware configuration
-    
+
     Args:
         output_dir: Directory for saving outputs
         questions: Initial questions to seed the search
@@ -277,7 +284,7 @@ def init_storm_runner(
     lm_configs = DataStormLMConfigs()
     lm_configs.set_conv_simulator_lm(gpt_4)
     lm_configs.set_question_asker_lm(gpt_4)
-    
+
     # Initialize retrieval module
     if use_decomposition_agent_rm:
         rm = DecompositionAgentRM(
@@ -297,7 +304,7 @@ def init_storm_runner(
             include_summary_stats=include_summary_stats,
             engine=datatalk_engine,
         )
-    
+
     # Auto-create internet RM for web search routing if not provided
     if internet_rm is None and os.getenv('SERPER_API_KEY'):
         from knowledge_storm.rm import SerperRM
@@ -305,26 +312,27 @@ def init_storm_runner(
 
     # Create runner instance
     runner = DataStormRunner(engine_args, lm_configs, rm, internet_rm=internet_rm)
-    
+
     # Set database description in knowledge curation module
     if hasattr(runner, 'storm_knowledge_curation_module'):
         runner.storm_knowledge_curation_module.database_description = db_description
-    
+
     return runner
 
 
 ### Step 2: Generate questions based on the STORM article
 async def generate_questions_from_storm_article(
-    topic,
-    article,
-    db_description,
-    num_questions = 3,
-    langfuse_readonly: bool = False,
+        topic,
+        article,
+        db_description,
+        num_questions=3,
+        langfuse_readonly: bool = False,
 ):
     llm = get_llm(model_name="gpt-5")
+
     class QuestionGenerationResponse(BaseModel):
         questions: List[str]
-    
+
     output = await call_llm_with_structured_output(
         "starting_questions",
         {
@@ -340,14 +348,15 @@ async def generate_questions_from_storm_article(
     output = output.questions
     return output
 
+
 def load_dataset_descriptions(base_path=None):
     base_path = base_path or os.getenv("INSIGHT_BENCH_NOTEBOOKS", "")
     """
     Dynamically load dataset descriptions from flag-{i}.json files.
-    
+
     Args:
         base_path: Base path where the JSON files are located
-        
+
     Returns:
         Dictionary mapping dataset keys to their descriptions
     """
@@ -358,7 +367,7 @@ def load_dataset_descriptions(base_path=None):
             file_path = os.path.join(base_path, f"flag-{i}.json")
             if not os.path.exists(file_path):
                 break
-                
+
             with open(file_path, 'r') as f:
                 data = json.load(f)
                 if "metadata" in data and "dataset_description" in data["metadata"]:
@@ -368,8 +377,9 @@ def load_dataset_descriptions(base_path=None):
         except Exception as e:
             print(f"Error loading dataset {i}: {e}")
             break
-    
+
     return descriptions
+
 
 db_description_mapping = {
     "acled": (
@@ -377,25 +387,25 @@ db_description_mapping = {
         "(Armed Conflict Location & Event Data), which records political violence, demonstrations and "
         "selected non-violent strategic developments worldwide. Each row is ONE ACLED event, recorded at "
         "a specific named location on a specific day.\n"
-        
+
         "Columns:\n"
         "- event_id_cnty (text): unique event identifier (country acronym + number, e.g. ETH9766)\n"
-        
+
         "- event_date (date)\n"
-        
-        "- year (date): The year in which the event took place.\n"
-        
+
+        "- year (int): The year in which the event took place.\n"
+
         "- time_precision (int 1-3): 1 = exact date; 2 = only the week is known (date set to mid-week); "
         "3 = only the month is known (date set to mid-month). Higher = less precise\n"
-        
+
         "- disorder_type (text): 'Political violence' (Battles, Explosions/Remote violence, Violence against "
         "civilians, Mob violence), 'Demonstrations' (Peaceful protest, Protest with intervention, Violent "
         "demonstration), 'Strategic developments', and the combined value 'Political violence; Demonstrations' "
         "(Excessive force against protesters). There is no 'Armed Conflict' or 'Protests' disorder_type.\n"
-        
+
         "- event_type (text): Battles, Protests, Riots, Explosions/Remote violence, Violence against civilians, "
         "Strategic developments\n"
-        
+
         "- sub_event_type (text), by event_type: Battles: Armed clash, Government regains territory, "
         "Non-state actor overtakes territory | Protests: Peaceful protest, Protest with intervention, "
         "Excessive force against protesters | Riots: Violent demonstration, Mob violence | "
@@ -405,59 +415,57 @@ db_description_mapping = {
         "Strategic developments: Agreement, Arrests, Change to group/activity, Disrupted weapons use, "
         "Headquarters or base established, Looting/property destruction, "
         "Non-violent transfer of territory, Other\n"
-        
+
         "- actor1, actor2 (text): the two main actors. Actor 1 is not necessarily the aggressor; only in "
         "Violence against civilians is the target always actor2. Generic actors are named 'Protesters (Country)', "
         "'Rioters (Country)', 'Civilians (Country)', 'Unidentified Armed Group (Country)'. actor2 can be blank\n"
-        
+
         "- assoc_actor_1, assoc_actor_2 (text): associated actors, semicolon-separated, can be blank\n"
-        
+
         "- inter1, inter2 (text): actor type (State forces, Rebel group, Political militia, Identity militia, "
         "Rioters, Protesters, Civilians, External/Other forces)\n"
-        
+
         "- interaction (text): pair of actor types in a FIXED canonical order, e.g. 'State forces-Civilians', "
         "'Rebel group-External/Other forces', or 'Protesters only'. The reverse order (e.g. 'Civilians-State forces') "
         "does NOT exist. To filter on an actor type regardless of position use interaction ILIKE '%Civilians%' or "
         "(inter1 = 'X' OR inter2 = 'X'). Note that inter1 and inter2 do not follow the canonical order.\n"
-        
+
         "- civilian_targeting (text): 'Civilian targeting' or blank. Marks events where civilians were the "
         "main or only target, including some Explosions/Remote violence, Riots and Excessive force against "
         "protesters events, not only Violence against civilians. Incidental harm is not included\n"
-        
+
         "- iso (int): ISO 3166 numeric country code\n"
-        
+
         "- region (text): world sub-region (e.g. 'Eastern Africa'), not a subdivision of a country\n"
-        
-        "- country (text), admin1 (text, largest sub-national unit), admin2, admin3 (can be blank)\n"
-        
+
+        "- country (text)\n"
+
         "- admin1 (text): The largest sub-national administrative region in which the event took place.\n"
-        
+
         "- admin2 (text): The second largest sub-national administrative region in which the event took place.\n"
-        
+
         "- admin3 (text): The third largest sub-national administrative region in which the event took place.\n"
-        
-        "- location (text): named place of the event; latitude, longitude (double precision): centroid of "
-        "that place, not a street-level position\n"
-        
+
+        "- location (text): named place of the event;\n"
+
         "- latitude (double precision): The latitude of the location in four decimal degrees notation (EPSG:4326).\n"
-        
+
         "- longitude (double precision): The longitude of the location in four decimal degrees notation (EPSG:4326).\n"
-        
+
         "- geo_precision (int 1-3): 1 = town, 2 = near a town or small area, 3 = larger region. Higher = less precise\n"
-        
-        "- source (text, semicolon-separated), source_scale (text), notes (text, short description), "
-        "tags (text, semicolon-separated), timestamp (Unix time of upload)\n"
-        
+
+        "- source (text, semicolon-separated)\n"
+
         "- source_scale (text): An indication of the geographic closeness of the used sources to the event.\n"
-        
+
         "- notes (text): A short description of the event.\n"
-        
+
         "- fatalities (int): REPORTED fatalities for the event\n"
-        
+
         "- tags (text): Additional structured information about the event. Separated by a semicolon.\n"
-        
+
         "- timestamp (bigint): An automatically generated Unix timestamp that represents the exact date and time an event was uploaded to the ACLED API.\n"
-        
+
         "Reading the data:\n"
         "- Coding is hierarchical to avoid double counting: simultaneous forms of violence are merged into ONE "
         "event of the highest-ranking type (shelling during a ground battle is part of a Battles event; a "
@@ -484,9 +492,9 @@ db_description_mapping.update(load_dataset_descriptions())
 
 
 async def regenerate_report_from_dir(
-    run_dir: str,
-    langfuse_readonly: bool = False,
-    model: str = "gpt-5",
+        run_dir: str,
+        langfuse_readonly: bool = False,
+        model: str = "gpt-5",
 ) -> str:
     """Regenerate report from an existing run directory using the staged pipeline.
 
@@ -548,15 +556,46 @@ async def regenerate_report_from_dir(
     return out_path
 
 
+def _postprocess_resynthesis(original: str, revised: str):
+    """Clean the critique resynthesis; never discards it for being longer than the polish.
+
+    - strips internal question tags such as [Q3], [Q1, Q2], [Q1][Q2]
+    - falls back to the original article only if the revision is empty
+    - re-attaches the original Sources appendix if the revision dropped it
+    - reports length ratio and added process language in `info` (saved in article_critique.json)
+      so the revision can be compared with the polish afterwards
+    """
+    import re as _re
+
+    def _body(t: str) -> str:
+        return t.split("\n## Sources")[0]
+
+    text = _re.sub(r"\s*\[Q\d+(?:\s*[,;]\s*Q\d+)*\]", "", revised or "")
+    ow, rw = len(_body(original).split()), len(_body(text).split())
+    info = {"original_words": ow, "revised_words": rw, "length_ratio": round(rw / ow, 2) if ow else None}
+
+    if not text.strip():
+        info["resynthesis_fallback"] = "empty"
+        return original, info
+
+    proc_terms = _re.compile(r"\b(SQL|alias|column|query|queries)\b", _re.I)
+    info["process_language_added"] = len(proc_terms.findall(text)) - len(proc_terms.findall(original))
+
+    if "## Sources" in original and "## Sources" not in text:
+        text = text.rstrip() + "\n\n---\n\n## Sources" + original.split("## Sources", 1)[1]
+        info["sources_reattached"] = True
+    return text, info
+
+
 async def run_article_critique_phase(
-    article: str,
-    topic: str,
-    dir_tree: str,
-    domain: str,
-    db_description: str,
-    langfuse_readonly: bool,
-    max_questions: int = 5,
-    disable_upload_to_azure: bool = False,
+        article: str,
+        topic: str,
+        dir_tree: str,
+        domain: str,
+        db_description: str,
+        langfuse_readonly: bool,
+        max_questions: int = 5,
+        disable_upload_to_azure: bool = False,
 ) -> dict:
     """Run a post-generation critique phase on the article.
 
@@ -577,6 +616,16 @@ async def run_article_critique_phase(
         context_desc="article critique impact analysis",
         langfuse_readonly=langfuse_readonly,
     )
+    if impact_analysis is None:
+        print("  [critique] Impact analysis returned no output (LLM call failed); skipping critique phase")
+        return {
+            "reader_impact": "",
+            "defensibility_assessment": "",
+            "challenging_questions": [],
+            "search_results": [],
+            "revised_article": "",
+            "resynthesis_info": {"resynthesis_fallback": "no_impact_analysis"},
+        }
     challenging_questions = impact_analysis.challenging_questions[:max_questions]
     print(f"  [critique] Impact analysis complete; {len(challenging_questions)} challenging questions generated")
 
@@ -655,7 +704,7 @@ async def run_article_critique_phase(
         f"Q: {sr['question']}\n"
         f"Web: {'; '.join(sr['web_findings']) or 'none'}\n"
         f"DB: {'; '.join(sr['db_findings']) or 'none'}"
-        for sr in search_results
+            for sr in search_results
     ) if search_results else "No evidence gathered."
 
     revised: RevisedArticle = await call_llm_with_structured_output(
@@ -670,14 +719,20 @@ async def run_article_critique_phase(
         context_desc="article critique resynthesis",
         langfuse_readonly=langfuse_readonly,
     )
-    print(f"  [critique] Resynthesis complete")
+    if revised is None:
+        print("  [critique] Resynthesis returned no output; keeping the original article")
+        revised_text, resynthesis_info = article, {"resynthesis_fallback": "no_output"}
+    else:
+        revised_text, resynthesis_info = _postprocess_resynthesis(article, revised.article)
+    print(f"  [critique] Resynthesis complete {resynthesis_info}")
 
     return {
         "reader_impact": impact_analysis.reader_impact,
         "defensibility_assessment": impact_analysis.defensibility_assessment,
         "challenging_questions": challenging_questions,
         "search_results": search_results,
-        "revised_article": revised.article,
+        "revised_article": revised_text,
+        "resynthesis_info": resynthesis_info,
     }
 
 
@@ -721,57 +776,57 @@ async def run_critique_from_dir(run_dir: str, langfuse_readonly: bool = False) -
 
 
 async def datastorm_after_warmstart(
-    topic,
-    costorm_runner,
-    domain,
-    first_level_questions,
-    output_dir,
-    max_tree_depth,
-    each_level_population_control_num,
-    max_global_insights: int = 30,
-    db_description = None,
-    empty_start = False,
-    expansion_max_questions = 5,
-    skip_final_article = False,
-    enable_followups = True,
-    generate_graphs = True,
-    consolidate_insights = False,
-    disable_upload_to_azure: bool = False,
-    enable_python: bool = False,
-    langfuse_readonly: bool = False,
-    use_topic_as_starting_question: bool = False,
-    use_decomposition_agent_rm: bool = False,
-    article_dir_suffix: str = "",
-    skip_thesis: bool = False,
-    include_summary_stats: bool = True,
-    datatalk_engine: str = None,
-    datastorm_main_model: str = "gpt-5",
+        topic,
+        costorm_runner,
+        domain,
+        first_level_questions,
+        output_dir,
+        max_tree_depth,
+        each_level_population_control_num,
+        max_global_insights: int = 30,
+        db_description=None,
+        empty_start=False,
+        expansion_max_questions=5,
+        skip_final_article=False,
+        enable_followups=True,
+        generate_graphs=True,
+        consolidate_insights=False,
+        disable_upload_to_azure: bool = False,
+        enable_python: bool = False,
+        langfuse_readonly: bool = False,
+        use_topic_as_starting_question: bool = False,
+        use_decomposition_agent_rm: bool = False,
+        article_dir_suffix: str = "",
+        skip_thesis: bool = False,
+        include_summary_stats: bool = True,
+        datatalk_engine: str = None,
+        datastorm_main_model: str = "gpt-5",
+        serper_query_params: Optional[dict] = None,
 ):
     if not db_description:
         if domain in db_description_mapping:
             db_description = db_description_mapping[domain]
         else:
             db_description = "You have access to a relevant database. The database description is not provided."
-    
-    
+
     print("🟣🟣🟣🟣 Running STEP 2: Generating questions from first STORM article")
     if use_topic_as_starting_question:
         questions = [topic]
     else:
         questions = await generate_questions_from_storm_article(
-            topic, 
+            topic,
             article=costorm_runner.knowledge_base.to_report() if not empty_start else None,
             db_description=db_description,
             num_questions=first_level_questions,
             langfuse_readonly=langfuse_readonly,
         )
-    assert(type(questions) == list)
+    assert (type(questions) == list)
 
     print("🟣🟣🟣🟣 Running STEP 3: Generating tree search retrieval process with Datatalk RM")
     runner = init_storm_runner(
         output_dir=output_dir,
         article_dir_suffix=article_dir_suffix,
-        questions=questions, 
+        questions=questions,
         max_tree_depth=max_tree_depth,
         domain=domain,
         each_level_population_control_num=each_level_population_control_num,
@@ -786,6 +841,7 @@ async def datastorm_after_warmstart(
         langfuse_readonly=langfuse_readonly,
         use_decomposition_agent_rm=use_decomposition_agent_rm,
         skip_thesis=skip_thesis,
+        serper_search_params=dict(serper_query_params) if serper_query_params else None,
         include_summary_stats=include_summary_stats,
         datatalk_engine=datatalk_engine,
         datastorm_main_model=datastorm_main_model,
@@ -806,7 +862,7 @@ async def datastorm_after_warmstart(
     # runner.post_run()
     # runner.summary()
 
-    with open(os.path.join(dir_tree,  "tree.json"), 'w', encoding='utf-8') as f:
+    with open(os.path.join(dir_tree, "tree.json"), 'w', encoding='utf-8') as f:
         json.dump(tree_json, f, indent=2, ensure_ascii=False)
 
     # Persist warm-start conversation history so the report can be regenerated later
@@ -825,7 +881,7 @@ async def datastorm_after_warmstart(
     if skip_final_article:
         print("Skipping final article generation as requested")
         return dir_tree
-    
+
     print("🟣🟣🟣🟣 Running STEP 4: Generating new article using direct LLM call")
 
     # Assemble evidence from ALL sources into staged_registry + staged_evidence_records.
@@ -897,7 +953,8 @@ async def datastorm_after_warmstart(
             node_id=node_id, depth=node.depth,
         ))
 
-    print(f"  Total evidence: {len(staged_evidence_records)} ({warmstart_count} warm start + {len(staged_evidence_records) - warmstart_count} tree search)")
+    print(
+        f"  Total evidence: {len(staged_evidence_records)} ({warmstart_count} warm start + {len(staged_evidence_records) - warmstart_count} tree search)")
 
     # Linearize registry into evidence_blocks / citation_map / evidence_text for the critique step
     evidence_blocks = [
@@ -960,7 +1017,8 @@ async def datastorm_after_warmstart(
 
     fact_check_stats = (staged_result or {}).get("fact_check_stats") or {}
     if fact_check_stats:
-        print(f"  [fact_check] {fact_check_stats.get('issues_found', 0)}/{fact_check_stats.get('total_checked', 0)} issue(s) found across {len(fact_check_stats.get('per_section', []))} sections")
+        print(
+            f"  [fact_check] {fact_check_stats.get('issues_found', 0)}/{fact_check_stats.get('total_checked', 0)} issue(s) found across {len(fact_check_stats.get('per_section', []))} sections")
 
     with open(os.path.join(dir_tree, "co_storm_report.txt"), "w") as f:
         f.write(full_report)
@@ -977,7 +1035,8 @@ async def datastorm_after_warmstart(
             disable_upload_to_azure=disable_upload_to_azure,
         )
         with open(os.path.join(dir_tree, "article_critique.json"), "w", encoding="utf-8") as f:
-            json.dump({k: v for k, v in critique_result.items() if k != "revised_article"}, f, indent=2, ensure_ascii=False)
+            json.dump({k: v for k, v in critique_result.items() if k != "revised_article"}, f, indent=2,
+                      ensure_ascii=False)
         revised_article = critique_result.get("revised_article") or ""
         if revised_article:
             with open(os.path.join(dir_tree, "co_storm_report_revised.txt"), "w", encoding="utf-8") as f:
@@ -1002,37 +1061,38 @@ async def datastorm_after_warmstart(
 
     return dir_tree
 
+
 async def process_generation(
-    topic,
-    output_dir,
-    first_level_questions=3,
-    max_tree_depth=1,
-    warmstart_max_num_experts=3,
-    warmstart_max_turn_per_experts=2,
-    node_expansion_trigger_count=10,
-    costorm_retriever="serper",
-    domain="acled",
-    each_level_population_control_num=5,
-    max_global_insights=30,
-    db_description=None,
-    no_warm_start=False,
-    expansion_max_questions=5,
-    skip_final_article=False,
-    enable_followups=True,
-    generate_graphs=True,
-    consolidate_insights=False,
-    disable_upload_to_azure: bool = False,
-    enable_python: bool = False,
-    langfuse_readonly: bool = False,
-    use_topic_as_starting_question: bool = False,
-    use_decomposition_agent_rm: bool = False,
-    append_timestamp_to_output_dir: bool = True,
-    serper_query_params: Optional[dict] = None,
-    skip_thesis: bool = False,
-    generation_module_model: str = "gpt-5",
-    include_summary_stats: bool = True,
-    datatalk_engine: str = None,
-    datastorm_main_model: str = "gpt-5",
+        topic,
+        output_dir,
+        first_level_questions=3,
+        max_tree_depth=1,
+        warmstart_max_num_experts=3,
+        warmstart_max_turn_per_experts=2,
+        node_expansion_trigger_count=10,
+        costorm_retriever="serper",
+        domain="acled",
+        each_level_population_control_num=5,
+        max_global_insights=30,
+        db_description=None,
+        no_warm_start=False,
+        expansion_max_questions=5,
+        skip_final_article=False,
+        enable_followups=True,
+        generate_graphs=True,
+        consolidate_insights=False,
+        disable_upload_to_azure: bool = False,
+        enable_python: bool = False,
+        langfuse_readonly: bool = False,
+        use_topic_as_starting_question: bool = False,
+        use_decomposition_agent_rm: bool = False,
+        append_timestamp_to_output_dir: bool = True,
+        serper_query_params: Optional[dict] = None,
+        skip_thesis: bool = False,
+        generation_module_model: str = "gpt-5",
+        include_summary_stats: bool = True,
+        datatalk_engine: str = None,
+        datastorm_main_model: str = "gpt-5",
 ):
     output_dir = _ensure_output_dir(output_dir)
     article_dir_suffix = ""
@@ -1050,12 +1110,11 @@ async def process_generation(
         node_expansion_trigger_count=node_expansion_trigger_count,
         serper_query_params=serper_query_params
     )
-    
-    empty_start = False
+
+    empty_start = bool(no_warm_start)
     if not no_warm_start:
         costorm_runner.warm_start()
-        empty_start = True
-    
+
     run_output_dir = await datastorm_after_warmstart(
         topic,
         costorm_runner,
@@ -1079,11 +1138,12 @@ async def process_generation(
         use_decomposition_agent_rm=use_decomposition_agent_rm,
         article_dir_suffix=article_dir_suffix,
         skip_thesis=skip_thesis,
+        serper_query_params=serper_query_params,
         include_summary_stats=include_summary_stats,
         datatalk_engine=datatalk_engine,
         datastorm_main_model=datastorm_main_model,
     )
-    
+
     # Record run metadata inside the final artifact directory.
     _write_run_metadata(
         run_output_dir,
@@ -1130,11 +1190,13 @@ async def process_generation(
     # - output_root_dir: the stable root output directory passed in / ensured on disk
     return {"status": "completed", "output_dir": run_output_dir, "output_root_dir": output_dir}
 
+
 if __name__ == "__main__":
     def parse_arguments():
         parser = argparse.ArgumentParser(description="Datatalk Basic Article Generation")
         parser.add_argument('--output_dir', type=str, help='Directory to save the output')
-        parser.add_argument('--first_level_questions', type=int, default=3, help='Number of questions for the first level')
+        parser.add_argument('--first_level_questions', type=int, default=3,
+                            help='Number of questions for the first level')
         parser.add_argument('--max_tree_depth', type=int, default=1, help='Maximum tree depth')
         parser.add_argument(
             '--warmstart_max_num_experts',
@@ -1154,7 +1216,8 @@ if __name__ == "__main__":
             default=10,
             help='Trigger node expansion for nodes that contain more than N snippets.'
         )
-        parser.add_argument('--costorm_retriever', type=str, choices=['bing', 'you', 'brave', 'serper', 'duckduckgo', 'tavily', 'searxng'],
+        parser.add_argument('--costorm_retriever', type=str,
+                            choices=['bing', 'you', 'brave', 'serper', 'duckduckgo', 'tavily', 'searxng'],
                             help='The search engine API to use for retrieving information.', default="serper")
         parser.add_argument('--topic', type=str, help='Topic for the article generation')
         parser.add_argument('--domain', type=str, help='Domain for the Datatalk RM', default="acled")
@@ -1295,6 +1358,7 @@ if __name__ == "__main__":
         )
         return parser.parse_args()
 
+
     # Define FastAPI request model
     class ArticleGenerationRequest(BaseModel):
         output_dir: str
@@ -1327,11 +1391,13 @@ if __name__ == "__main__":
         datatalk_engine: Optional[str] = None
         datastorm_main_model: str = "gpt-5"
 
+
     # Define basic LLM configs
     args = parse_arguments()
 
     if args.api_mode:
         app = FastAPI()
+
 
         @app.post("/generate_article")
         async def generate_article(request: ArticleGenerationRequest):
@@ -1369,7 +1435,8 @@ if __name__ == "__main__":
             )
             return result
             # except Exception as e:
-                # raise HTTPException(status_code=500, detail=str(e))
+            # raise HTTPException(status_code=500, detail=str(e))
+
 
         @app.post("/regenerate_report")
         async def api_regenerate_report(request: dict):
@@ -1380,10 +1447,12 @@ if __name__ == "__main__":
             out_path = await regenerate_report_from_dir(run_dir, langfuse_readonly=langfuse_readonly)
             return {"status": "completed", "output_path": out_path}
 
+
         print(f"Starting FastAPI server on port {args.port}")
         uvicorn.run(app, host="0.0.0.0", port=args.port)
     elif args.regenerate:
         import asyncio
+
         asyncio.run(regenerate_report_from_dir(
             args.regenerate,
             langfuse_readonly=args.langfuse_readonly,
@@ -1395,8 +1464,9 @@ if __name__ == "__main__":
         asyncio.run(run_critique_from_dir(args.critique, langfuse_readonly=args.langfuse_readonly))
     else:
         import asyncio
-        assert(args.topic is not None)
-        assert(args.output_dir is not None)
+
+        assert (args.topic is not None)
+        assert (args.output_dir is not None)
 
         # Parse serper_query_params from JSON string if provided
         serper_params = None

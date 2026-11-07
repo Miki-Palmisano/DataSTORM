@@ -77,6 +77,54 @@ def get_llm(
         ),
     )
 
+_NEUTRAL_RETRY_NOTE = (
+    "Note: this is a neutral, analytical task over published conflict-monitoring data (ACLED). "
+    "Describe events in clinical, factual language, without graphic detail, and answer in the requested format."
+)
+
+
+def _is_content_filter_error(e: Exception) -> bool:
+    s = f"{type(e).__name__} {e}".lower()
+    return any(k in s for k in (
+        "content_filter", "content filter", "responsibleaipolicyviolation", "content management policy",
+    ))
+
+
+async def _structured_ainvoke(llm, output_class, messages, config, context_desc: str = ""):
+    """with_structured_output(...).ainvoke(...) that survives content-filter 400s.
+
+    Retry plan (only for content-filter errors, any other error is re-raised as before):
+      1) same model + neutral-language note appended to the messages
+      2) optional fallback model (env DATASTORM_FALLBACK_MODEL) + the same note
+    """
+    note = {"role": "user", "content": _NEUTRAL_RETRY_NOTE}
+    attempts = [(llm, messages), (llm, list(messages) + [note])]
+    fb = os.getenv("DATASTORM_FALLBACK_MODEL")
+    if fb:
+        fb_llm = get_llm(model_name=fb)
+        if "gpt-5" in fb:
+            fb_llm.temperature = 1.0
+        attempts.append((fb_llm, list(messages) + [note]))
+
+    last_exc = None
+    for i, (m, msgs) in enumerate(attempts):
+        try:
+            try:
+                runner = m.with_structured_output(output_class)
+            except Exception:
+                runner = m.with_structured_output(output_class, method="json_mode")
+            return await runner.ainvoke(msgs, config=config)
+        except Exception as e:
+            if not _is_content_filter_error(e):
+                raise
+            last_exc = e
+            logger.warning(
+                f"Content filter hit for {context_desc} (attempt {i + 1}/{len(attempts)}): {str(e)[:200]}"
+            )
+            await asyncio.sleep(2)
+    raise last_exc
+
+
 T = TypeVar("T")
 R = TypeVar("R")
 M = TypeVar("M", bound=BaseModel)
@@ -576,7 +624,7 @@ async def call_llm_with_structured_output(
                         return None
 
                 # Disable LangChain's internal cache and callbacks for this call; we manage caching ourselves and avoid tracer serialization issues.
-                llm_result = await runner.ainvoke(messages, config={"cache": False, "callbacks": _get_langfuse_callbacks(), "metadata": { "langfuse_session_id": session_id,}})
+                llm_result = await _structured_ainvoke(llm, output_class, messages, {"cache": False, "callbacks": _get_langfuse_callbacks(), "metadata": { "langfuse_session_id": session_id,}}, context_desc or prompt_id)
 
                 # Convert dict result to Pydantic model if needed
                 result = output_class.model_validate(llm_result) if isinstance(llm_result, dict) else llm_result
@@ -650,7 +698,7 @@ async def call_llm_with_structured_output_readonly(
     image_dicts: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[M]:
     """Call LLM with structured output WITHOUT uploading anything to Langfuse.
-    
+
     - Still compiles the prompt from Langfuse (read-only).
     - No @observe decorator and no client.update_current_generation calls.
     - Preserves caching and tool-call behavior.
@@ -788,7 +836,7 @@ async def call_llm_with_structured_output_readonly(
                         f"json_mode fallback also failed: {e_json}"
                     )
                     return None
-            llm_result = await runner.ainvoke(messages, config={"cache": False, "callbacks": []})
+            llm_result = await _structured_ainvoke(llm, output_class, messages, {"cache": False, "callbacks": []}, context_desc or prompt_id)
             result = output_class.model_validate(llm_result) if isinstance(llm_result, dict) else llm_result
             final_result = result
             result_kind = "structured"

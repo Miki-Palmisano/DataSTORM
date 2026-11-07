@@ -19,12 +19,12 @@ from .utils import WebPageHelper
 
 
 def _append_failed_query_to_repo_root(
-    query: str,
-    error: str,
-    conversation_history: Any = None,
-    rm_name: str = "unknown",
-    debug: Any = None,
-    filename: str = "failed_queries.jsonl",
+        query: str,
+        error: str,
+        conversation_history: Any = None,
+        rm_name: str = "unknown",
+        debug: Any = None,
+        filename: str = "failed_queries.jsonl",
 ) -> None:
     """
     Best-effort logging of failed queries to a file at the repo root (one level above `knowledge_storm/`).
@@ -105,7 +105,8 @@ def _get_table_summary_statistics_from_results_table(results_table):
         try:
             sample_value = df[column].iloc[0] if not df[column].empty else None
             if sample_value is not None:
-                if isinstance(sample_value, (int, float, pd.Timestamp, pd.Timedelta)) or pd.api.types.is_numeric_dtype(df[column]):
+                if isinstance(sample_value, (int, float, pd.Timestamp, pd.Timedelta)) or pd.api.types.is_numeric_dtype(
+                        df[column]):
                     try:
                         col_stats["min"] = df[column].min()
                         col_stats["max"] = df[column].max()
@@ -170,7 +171,7 @@ class YouRM(dspy.Retrieve):
         return {"YouRM": usage}
 
     def forward(
-        self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
+            self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
     ):
         """Search with You.com for self.k top passages for query or queries
 
@@ -210,16 +211,16 @@ class YouRM(dspy.Retrieve):
 
 class BingSearch(dspy.Retrieve):
     def __init__(
-        self,
-        bing_search_api_key=None,
-        k=3,
-        is_valid_source: Callable = None,
-        min_char_count: int = 150,
-        snippet_chunk_size: int = 1000,
-        webpage_helper_max_threads=10,
-        mkt="en-US",
-        language="en",
-        **kwargs,
+            self,
+            bing_search_api_key=None,
+            k=3,
+            is_valid_source: Callable = None,
+            min_char_count: int = 150,
+            snippet_chunk_size: int = 1000,
+            webpage_helper_max_threads=10,
+            mkt="en-US",
+            language="en",
+            **kwargs,
     ):
         """
         Params:
@@ -260,7 +261,7 @@ class BingSearch(dspy.Retrieve):
         return {"BingSearch": usage}
 
     def forward(
-        self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
+            self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
     ):
         """Search with Bing for self.k top passages for query or queries
 
@@ -314,14 +315,14 @@ class SerperRM(dspy.Retrieve):
     """Retrieve information from custom queries using Serper.dev."""
 
     def __init__(
-        self,
-        serper_search_api_key=None,
-        k=3,
-        query_params=None,
-        ENABLE_EXTRA_SNIPPET_EXTRACTION=False,
-        min_char_count: int = 150,
-        snippet_chunk_size: int = 1000,
-        webpage_helper_max_threads=10,
+            self,
+            serper_search_api_key=None,
+            k=3,
+            query_params=None,
+            ENABLE_EXTRA_SNIPPET_EXTRACTION=False,
+            min_char_count: int = 150,
+            snippet_chunk_size: int = 1000,
+            webpage_helper_max_threads=10,
     ):
         """Args:
         serper_search_api_key str: API key to run serper, can be found by creating an account on https://serper.dev/
@@ -394,17 +395,17 @@ class SerperRM(dspy.Retrieve):
         self.usage = 0
         return {"SerperRM": usage}
 
-    def forward(self, query_or_queries: Union[str, List[str]], exclude_urls: List[str]):
+    def forward(self, query_or_queries: Union[str, List[str]], exclude_urls: Optional[List[str]] = None):
         """
         Calls the API and searches for the query passed in.
-
 
         Args:
             query_or_queries (Union[str, List[str]]): The query or queries to search for.
             exclude_urls (List[str]): Dummy parameter to match the interface. Does not have any effect.
 
         Returns:
-            a list of dictionaries, each dictionary has keys of 'description', 'snippets' (list of strings), 'title', 'url'
+            a list of dictionaries, each dictionary has keys of 'description', 'snippets' (list of strings),
+            'title', 'url', plus 'date' and 'truncated' when available.
         """
         queries = (
             [query_or_queries]
@@ -413,31 +414,23 @@ class SerperRM(dspy.Retrieve):
         )
 
         self.usage += len(queries)
-        self.results = []
-        collected_results = []
+        # Local state only: this method is called concurrently from a thread pool, and the previous
+        # version shared self.query_params / self.results between threads (wrong "q", mixed results).
+        results = []
         for query in queries:
             if query == "Queries:":
                 continue
-            query_params = self.query_params
-
-            # All available parameters can be found in the playground: https://serper.dev/playground
-            # Sets the json value for query to be the query that is being parsed.
+            query_params = dict(self.query_params)
             query_params["q"] = query
 
             # Sets the type to be search, can be images, video, places, maps etc that Google provides.
             query_params["type"] = "search"
-
-            self.result = self.serper_runner(query_params)
-            self.results.append(self.result)
-
-        # Array of dictionaries that will be used by Storm to create the jsons
-        collected_results = []
+            results.append(self.serper_runner(query_params))
 
         if self.ENABLE_EXTRA_SNIPPET_EXTRACTION:
             urls = []
-            for result in self.results:
-                organic_results = result.get("organic", [])
-                for organic in organic_results:
+            for result in results:
+                for organic in (result.get("organic") or []):
                     url = organic.get("link")
                     if url:
                         urls.append(url)
@@ -445,24 +438,32 @@ class SerperRM(dspy.Retrieve):
         else:
             valid_url_to_snippets = {}
 
-        for result in self.results:
-            try:
-                # An array of dictionaries that contains the snippets, title of the document and url that will be used.
-                organic_results = result.get("organic")
-                knowledge_graph = result.get("knowledgeGraph")
-                for organic in organic_results:
-                    snippets = [organic.get("snippet")]
+        collected_results = []
+        for result in results:
+            knowledge_graph = result.get("knowledgeGraph")
+            for organic in (result.get("organic") or []):
+                try:
+                    url = organic.get("link")
+                    snippet = (organic.get("snippet") or "").strip()
+                    date = (organic.get("date") or "").strip()
+                    truncated = snippet.endswith(("...", "\u2026"))
+                    text = snippet
+                    if date:
+                        text = f"[{date}] {text}"
+                    if truncated:
+                        text += " (excerpt truncated by the search engine)"
+                    snippets = [text]
                     if self.ENABLE_EXTRA_SNIPPET_EXTRACTION:
                         snippets.extend(
-                            valid_url_to_snippets.get(url.strip("'"), {}).get(
-                                "snippets", []
-                            )
+                            valid_url_to_snippets.get((url or "").strip("'"), {}).get("snippets", [])
                         )
                     collected_results.append(
                         {
                             "snippets": snippets,
                             "title": organic.get("title"),
-                            "url": organic.get("link"),
+                            "url": url,
+                            "date": date,
+                            "truncated": truncated,
                             "description": (
                                 knowledge_graph.get("description")
                                 if knowledge_graph is not None
@@ -470,18 +471,22 @@ class SerperRM(dspy.Retrieve):
                             ),
                         }
                     )
-            except:
-                continue
+                except Exception:
+                    continue
 
         # Filter out results with URLs starting with "https://acleddata.com/"
         # NOTE: hardcode
-        filtered_results = [result for result in collected_results if not result["url"].startswith("https://acleddata.com/")]
+        excluded_domains = ("acleddata.com", "reliefweb.int")
+        filtered_results = [
+            r for r in collected_results
+            if r.get("url") and not any(d in r["url"] for d in excluded_domains)
+        ]
         return filtered_results
 
 
 class BraveRM(dspy.Retrieve):
     def __init__(
-        self, brave_search_api_key=None, k=3, is_valid_source: Callable = None
+            self, brave_search_api_key=None, k=3, is_valid_source: Callable = None
     ):
         super().__init__(k=k)
         if not brave_search_api_key and not os.environ.get("BRAVE_API_KEY"):
@@ -507,7 +512,7 @@ class BraveRM(dspy.Retrieve):
         return {"BraveRM": usage}
 
     def forward(
-        self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
+            self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
     ):
         """Search with api.search.brave.com for self.k top passages for query or queries
 
@@ -555,11 +560,11 @@ class BraveRM(dspy.Retrieve):
 
 class SearXNG(dspy.Retrieve):
     def __init__(
-        self,
-        searxng_api_url,
-        searxng_api_key=None,
-        k=3,
-        is_valid_source: Callable = None,
+            self,
+            searxng_api_url,
+            searxng_api_key=None,
+            k=3,
+            is_valid_source: Callable = None,
     ):
         """Initialize the SearXNG search retriever.
         Please set up SearXNG according to https://docs.searxng.org/index.html.
@@ -589,7 +594,7 @@ class SearXNG(dspy.Retrieve):
         return {"SearXNG": usage}
 
     def forward(
-        self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
+            self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
     ):
         """Search with SearxNG for self.k top passages for query or queries
 
@@ -641,14 +646,14 @@ class DuckDuckGoSearchRM(dspy.Retrieve):
     """Retrieve information from custom queries using DuckDuckGo."""
 
     def __init__(
-        self,
-        k: int = 3,
-        is_valid_source: Callable = None,
-        min_char_count: int = 150,
-        snippet_chunk_size: int = 1000,
-        webpage_helper_max_threads=10,
-        safe_search: str = "On",
-        region: str = "us-en",
+            self,
+            k: int = 3,
+            is_valid_source: Callable = None,
+            min_char_count: int = 150,
+            snippet_chunk_size: int = 1000,
+            webpage_helper_max_threads=10,
+            safe_search: str = "On",
+            region: str = "us-en",
     ):
         """
         Params:
@@ -712,7 +717,7 @@ class DuckDuckGoSearchRM(dspy.Retrieve):
         return results
 
     def forward(
-        self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
+            self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
     ):
         """Search with DuckDuckGoSearch for self.k top passages for query or queries
         Args:
@@ -771,14 +776,14 @@ class TavilySearchRM(dspy.Retrieve):
     """Retrieve information from custom queries using Tavily. Documentation and examples can be found at https://docs.tavily.com/docs/python-sdk/tavily-search/examples"""
 
     def __init__(
-        self,
-        tavily_search_api_key=None,
-        k: int = 3,
-        is_valid_source: Callable = None,
-        min_char_count: int = 150,
-        snippet_chunk_size: int = 1000,
-        webpage_helper_max_threads=10,
-        include_raw_content=False,
+            self,
+            tavily_search_api_key=None,
+            k: int = 3,
+            is_valid_source: Callable = None,
+            min_char_count: int = 150,
+            snippet_chunk_size: int = 1000,
+            webpage_helper_max_threads=10,
+            include_raw_content=False,
     ):
         """
         Params:
@@ -830,7 +835,7 @@ class TavilySearchRM(dspy.Retrieve):
         return {"TavilySearchRM": usage}
 
     def forward(
-        self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
+            self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
     ):
         """Search with TavilySearch for self.k top passages for query or queries
         Args:
@@ -944,6 +949,7 @@ if os.path.abspath(debug_log_path) not in [os.path.abspath(p) for p in _existing
 
 rm_debug_logger.propagate = False
 
+
 def upload_to_azure(source):
     import subprocess
     import os
@@ -953,7 +959,7 @@ def upload_to_azure(source):
         raise RuntimeError("AZURE_SAS_TOKEN environment variable is not set.")
     if not Azure_storage_dest:
         raise RuntimeError("AZURE_STORAGE_DEST environment variable is not set.")
-    
+
     filename = source.split('/')[-1]
     destination = f'{Azure_storage_dest}/{filename}?{Azure_SAS_token}'
 
@@ -981,7 +987,9 @@ class DatatalkRM(dspy.Retrieve):
         str(pathlib.Path(__file__).resolve().parent.parent / "sql_results"),
     )
 
-    def __init__(self, k=3, is_valid_source: Callable = None, domain="acled", disable_upload_to_azure: bool = False, enable_python: bool = False, langfuse_readonly: bool = False, include_summary_stats: bool = True, engine: str = None):
+    def __init__(self, k=3, is_valid_source: Callable = None, domain="acled", disable_upload_to_azure: bool = False,
+                 enable_python: bool = False, langfuse_readonly: bool = False, include_summary_stats: bool = True,
+                 engine: str = None):
         self.usage = 0
         self.domain = domain
         self.rm_type = "datatalk"
@@ -1075,16 +1083,16 @@ class DatatalkRM(dspy.Retrieve):
         return (viewer + uploaded) if viewer else uploaded
 
     def _run_query(
-        self,
-        *,
-        query: str,
-        conversation_history: Union[str, list, None],
-        disable_upload_to_azure: bool,
-        enable_python: bool,
-        langfuse_readonly: bool,
-        include_summary_stats: bool,
-        engine: str,
-        designation: Optional[str],
+            self,
+            *,
+            query: str,
+            conversation_history: Union[str, list, None],
+            disable_upload_to_azure: bool,
+            enable_python: bool,
+            langfuse_readonly: bool,
+            include_summary_stats: bool,
+            engine: str,
+            designation: Optional[str],
     ) -> dict:
         """Run one query through the in-process library and shape the result."""
         from knowledge_storm.datatalk_agent import library
@@ -1141,16 +1149,16 @@ class DatatalkRM(dspy.Retrieve):
         }
 
     def forward(
-        self,
-        query_or_queries: Union[str, List[str]],
-        exclude_urls: List[str] = [],
-        conversation_history: Union[str, list, None] = None,
-        disable_upload_to_azure: bool = None,
-        enable_python: bool = None,
-        langfuse_readonly: bool = None,
-        include_summary_stats: bool = True,
-        engine: str = None,
-        **kwargs,
+            self,
+            query_or_queries: Union[str, List[str]],
+            exclude_urls: List[str] = [],
+            conversation_history: Union[str, list, None] = None,
+            disable_upload_to_azure: bool = None,
+            enable_python: bool = None,
+            langfuse_readonly: bool = None,
+            include_summary_stats: bool = True,
+            engine: str = None,
+            **kwargs,
     ):
         """
         Args:
@@ -1205,7 +1213,9 @@ class DatatalkRM(dspy.Retrieve):
 
 
 class DecompositionAgentRM(dspy.Retrieve):
-    def __init__(self, k=3, is_valid_source: Callable = None, domain="N/A", wait_time=1200, disable_upload_to_azure: bool = False, enable_python: bool = False, langfuse_readonly: bool = False, include_summary_stats: bool = True, engine: str = None):
+    def __init__(self, k=3, is_valid_source: Callable = None, domain="N/A", wait_time=1200,
+                 disable_upload_to_azure: bool = False, enable_python: bool = False, langfuse_readonly: bool = False,
+                 include_summary_stats: bool = True, engine: str = None):
         self.usage = 0
         self.domain = domain
         self.rm_type = "datatalk"
@@ -1215,7 +1225,7 @@ class DecompositionAgentRM(dspy.Retrieve):
         self.langfuse_readonly = langfuse_readonly
         self.include_summary_stats = include_summary_stats
         self.engine = engine
-        
+
         # If not None, is_valid_source shall be a function that takes a URL and returns a boolean.
         if is_valid_source:
             self.is_valid_source = is_valid_source
@@ -1240,10 +1250,10 @@ class DecompositionAgentRM(dspy.Retrieve):
 
     @staticmethod
     def _build_params(
-        query: str,
-        is_sql: bool,
-        conversation_history: List[dict],
-        kwargs: dict,
+            query: str,
+            is_sql: bool,
+            conversation_history: List[dict],
+            kwargs: dict,
     ) -> dict:
         if is_sql:
             return {"sql_query": query, **kwargs}
@@ -1299,10 +1309,10 @@ class DecompositionAgentRM(dspy.Retrieve):
 
     @staticmethod
     def _save_result_table_to_csv_and_backfill_response(
-        *,
-        query: str,
-        response: dict,
-        conversation_history: List[dict],
+            *,
+            query: str,
+            response: dict,
+            conversation_history: List[dict],
     ) -> None:
         """
         Non-SQL mode: if API returns a list of dict rows in `result_table`, persist to CSV and
@@ -1377,7 +1387,7 @@ class DecompositionAgentRM(dspy.Retrieve):
 
     @staticmethod
     def _handle_non_sql_unexpected_success_shape(
-        query: str, response: dict, conversation_history: List[dict]
+            query: str, response: dict, conversation_history: List[dict]
     ) -> None:
         _append_failed_query_to_repo_root(
             query=query,
@@ -1394,14 +1404,14 @@ class DecompositionAgentRM(dspy.Retrieve):
         response["result_count"] = 0
 
     def _compute_result_url(
-        self,
-        *,
-        query: str,
-        response: dict,
-        api_url: str,
-        http_response: "requests.Response",
-        disable_upload_to_azure: bool,
-        conversation_history: List[dict],
+            self,
+            *,
+            query: str,
+            response: dict,
+            api_url: str,
+            http_response: "requests.Response",
+            disable_upload_to_azure: bool,
+            conversation_history: List[dict],
     ) -> str:
         file_path = (
             response["file_path"] if "file_path" in response else "error_while_saving_datatalk_results"
@@ -1445,11 +1455,11 @@ class DecompositionAgentRM(dspy.Retrieve):
 
     @staticmethod
     def _build_collected_result(
-        *,
-        query: str,
-        url: str,
-        response: dict,
-        conversation_history: List[dict],
+            *,
+            query: str,
+            url: str,
+            response: dict,
+            conversation_history: List[dict],
     ) -> dict:
         return {
             "title": f"SQL Database response for {query}",
@@ -1468,7 +1478,9 @@ class DecompositionAgentRM(dspy.Retrieve):
         }
 
     def forward(
-        self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = [], conversation_history: List[dict] = [], disable_upload_to_azure: bool = None, enable_python: bool = None, langfuse_readonly: bool = None, **kwargs
+            self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = [],
+            conversation_history: List[dict] = [], disable_upload_to_azure: bool = None, enable_python: bool = None,
+            langfuse_readonly: bool = None, **kwargs
     ):
         """
         Args:

@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import json
 import os
 import re
@@ -9,7 +10,8 @@ from datetime import date
 from knowledge_storm.log_utils import logger
 from langgraph.graph import END, StateGraph
 
-from knowledge_storm.datatalk_agent.state import Action, DatatalkParserState, SqlQuery, compute_domain_specific_instructions, parse_execute_python_from_sql_output
+from knowledge_storm.datatalk_agent.state import Action, DatatalkParserState, SqlQuery, \
+    compute_domain_specific_instructions, parse_execute_python_from_sql_output
 from knowledge_storm.datatalk_agent.utils import (
     BaseParser,
     format_table_schema,
@@ -25,6 +27,7 @@ from knowledge_storm.langfuse_llm import get_llm, call_llm_with_structured_outpu
 CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
 
 REPEATED_ACTION_OBSERVATION = "I have already taken this action. I should not repeat the same action twice. In the next turn I will try something different. If it is impossible to make progress, I should call stop()."
+
 
 async def json_to_string(j: dict) -> str:
     return json.dumps(j, indent=2, ensure_ascii=False)
@@ -44,19 +47,22 @@ async def json_to_action(action_dict: dict) -> Action:
         action_argument=action_argument,
     )
 
+
 class LLMThoughtAction(BaseModel):
     thought: str
-    
-    action_name: str # one of 'get_tables', 'retrieve_tables_details', 'execute_sql', 'stop'
-    
-    action_argument: Union[str, List[str]] # `retrieve_tables_details` argument is a list, others is a str
-    
+
+    action_name: str  # one of 'get_tables', 'retrieve_tables_details', 'execute_sql', 'stop'
+
+    action_argument: Union[str, List[str]]  # `retrieve_tables_details` argument is a list, others is a str
+
+
 class VerifyDomainSpecificInstructionThoughtActionAction(BaseModel):
     thought: str
-    
-    action_name: str # one of 'reexecute_sql', 'stop'
-    
+
+    action_name: str  # one of 'reexecute_sql', 'stop'
+
     action_argument: Optional[str]
+
 
 async def llmThoughtAction_to_Action(thought_action: LLMThoughtAction) -> Action:
     thought = thought_action.thought
@@ -72,10 +78,11 @@ async def llmThoughtAction_to_Action(thought_action: LLMThoughtAction) -> Action
         action_argument=action_argument,
     )
 
+
 def retrieve_relevant_domain_specific_instructions(
-    sql: str,
-    instructions: dict,
-    controller_reporter = "reporter"
+        sql: str,
+        instructions: dict,
+        controller_reporter="reporter"
 ):
     res = []
     for table in instructions.keys():
@@ -109,34 +116,35 @@ def _history_window(actions, head: int = 2, tail: int = 8):
 
 cache_entity_linking = RedisLLMCacheEntityLinking(redis_url="redis://redis:6379", ttl=3600)
 
+
 class DatatalkParser(BaseParser):
     def __init__(
-        self,
-        engine: str,
-        table_w_ids: dict,
-        database_name: str,
-        suql_model_name: str,
-        embedding_server_address: str = "http://127.0.0.1:8505",
-        free_text_server_address: str = "http://127.0.0.1:8510",
-        source_file_mapping: dict = {},
-        db_type: Literal["postgres", "sqlite"] = "postgres",
-        db_secrets_file = None,
-        examples: list | None = None,
-        table_schema: list | None = None,
-        domain_specific_instructions: str | None = None,
-        available_actions: list | None = [
-            "get_tables", # retrieve relevant tables based on a query
-        ],
-        suql_enabled = False,
-        enable_python = False,
-        langfuse_readonly: bool = False,
-        num_init_steps_cached = 2,
-        db_path = None
+            self,
+            engine: str,
+            table_w_ids: dict,
+            database_name: str,
+            suql_model_name: str,
+            embedding_server_address: str = "http://127.0.0.1:8505",
+            free_text_server_address: str = "http://127.0.0.1:8510",
+            source_file_mapping: dict = {},
+            db_type: Literal["postgres", "sqlite"] = "postgres",
+            db_secrets_file=None,
+            examples: list | None = None,
+            table_schema: list | None = None,
+            domain_specific_instructions: str | None = None,
+            available_actions: list | None = [
+                "get_tables",  # retrieve relevant tables based on a query
+            ],
+            suql_enabled=False,
+            enable_python=False,
+            langfuse_readonly: bool = False,
+            num_init_steps_cached=2,
+            db_path=None
     ):
         async def initialize_state(input):
             question = input["question"]
             (f"Started processing {question}")
-            
+
             return DatatalkParserState(
                 question=question,
                 conversation_history=input["conversation_history"],
@@ -165,17 +173,16 @@ class DatatalkParser(BaseParser):
                 entity_linking_results=input["entity_linking_results"] if "entity_linking_results" in input else {},
                 db_path=db_path,
             )
-        
+
         self.runnable = initialize_state | DatatalkParser.compiled_graph
         self.database_name = database_name
         self.langfuse_readonly = langfuse_readonly
         self.db_secrets_file = db_secrets_file
-        
-    
+
     @classmethod
     def initialize(
-        cls,
-        engine: str
+            cls,
+            engine: str
     ):
         # build the graph
         graph = StateGraph(DatatalkParserState)
@@ -205,20 +212,20 @@ class DatatalkParser(BaseParser):
         ]:
             graph.add_edge(n, "controller")
         graph.add_edge("stop", "verify_domain_specific_instructions")
-        
+
         # router decides whether to end
         graph.add_conditional_edges(
             "verify_domain_specific_instructions",
             DatatalkParser.router,
         )
-        
+
         cls.compiled_graph = graph.compile()
 
     @staticmethod
     async def sql_chain(
-        sql: str,
-        state,
-        limit_query = " LIMIT 1000"
+            sql: str,
+            state,
+            limit_query=" LIMIT 1000"
     ) -> SqlQuery:
         sql_query_object = SqlQuery(
             sql=sql,
@@ -235,7 +242,7 @@ class DatatalkParser(BaseParser):
         )
         await sql_query_object.execute(limit_query=limit_query)
         return sql_query_object
-        
+
     @staticmethod
     def get_current_action(state):
         return state["actions"][-1]
@@ -248,12 +255,13 @@ class DatatalkParser(BaseParser):
         # chitchatting
         elif len(state["actions"]) == 1 and state["actions"][-1].action_name == "stop":
             return END
-        elif len(state["actions"]) > 2 and state["actions"][-2].action_name == "stop" and state["actions"][-1].action_name == "stop":
+        elif len(state["actions"]) > 2 and state["actions"][-2].action_name == "stop" and state["actions"][
+            -1].action_name == "stop":
             return END
 
         elif state["action_counter"] >= 15 or state["total_action_counter"] >= 21:
             return END
-        
+
         elif state["actions"][-1].action_name == "error":
             return END
 
@@ -264,7 +272,21 @@ class DatatalkParser(BaseParser):
                 if state["actions"][-2].observation == REPEATED_ACTION_OBSERVATION and _is_same_sql(
                         state["actions"][-1].action_argument, state["actions"][-2].action_argument):
                     return END
-        
+
+        # --- loop guards (tunable through env) ---
+        if actions[-1].action_name == "execute_sql":
+            exec_actions = [a for a in actions if a.action_name == "execute_sql"]
+            # the same SQL has been blocked as "already executed" too many times
+            max_rep = int(os.getenv("DATASTORM_MAX_REPEATED_SQL", "2"))
+            if sum(1 for a in exec_actions if a.observation == REPEATED_ACTION_OBSERVATION) >= max_rep:
+                return END
+            # the last N executions all returned zero rows: the question is probably not answerable
+            max_empty = int(os.getenv("DATASTORM_MAX_EMPTY_SQL", "4"))
+            if len(exec_actions) >= max_empty and all(
+                    getattr(a, "result_count", None) == 0 for a in exec_actions[-max_empty:]
+            ):
+                return END
+
         return state["actions"][-1].action_name
 
     @staticmethod
@@ -274,8 +296,8 @@ class DatatalkParser(BaseParser):
                 first_action_thought = "To answer the question, I need to identify the tables containing the relevant information. I'll start by retrieving the available tables to understand the database structure."
                 first_action_name = "get_tables"
                 action = Action(
-                    thought=first_action_thought, 
-                    action_name=first_action_name, 
+                    thought=first_action_thought,
+                    action_name=first_action_name,
                     action_argument=None,
                 )
 
@@ -284,22 +306,22 @@ class DatatalkParser(BaseParser):
                 second_action_name = "retrieve_tables_details"
                 second_action_arg = [table_dict['table_name'] for table_dict in get_tables(state['table_schemas'])]
                 action = Action(
-                    thought=second_action_thought, 
-                    action_name=second_action_name, 
+                    thought=second_action_thought,
+                    action_name=second_action_name,
                     action_argument=second_action_arg,
                 )
             return action
-        
+
         # make the history shorter
         actions = _history_window(state["actions"])
         action_history = []
         image_dicts = []
-        
+
         get_tables_schema_results = []
         shown_sql = []  # SQL whose observation has really been included in the prompt
         for i, a in enumerate(actions):
             include_observation = True
-            
+
             if i < len(actions) - 4 and a.action_name in [
                 "get_tables",
             ]:
@@ -331,7 +353,7 @@ class DatatalkParser(BaseParser):
                     include_observation = False
                 else:
                     get_tables_schema_results.append(a.observation)
-            
+
             action_history.append(a.to_jinja_string(include_observation))
             if a.images_b64s:
                 image_dicts = [{
@@ -340,7 +362,7 @@ class DatatalkParser(BaseParser):
                         "url": f"data:image/png;base64,{image_data}"
                     }
                 } for image_data in a.images_b64s]
-        
+
         # if a previous turn is to execute a SQL that involved one of the
         # domain specific instructions, update it here
         domain_specific_instructions = []
@@ -356,7 +378,7 @@ class DatatalkParser(BaseParser):
                 state["domain_specific_instructions"],
                 controller_reporter="controller"
             )
-    
+
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -385,18 +407,23 @@ class DatatalkParser(BaseParser):
                         image_dicts=image_dicts,
                         langfuse_readonly=state["langfuse_readonly"],
                     )
+                    if action is None:
+                        # LLM wrapper returns None on failure (e.g. content filter after its own retries)
+                        raise RuntimeError("datatalk_controller returned no output (LLM call failed)")
                     action = await llmThoughtAction_to_Action(action)
                 break
             except Exception as e:
                 # Log the error if needed
                 print(f"controller chain encountered the following unexpected error: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))
                 if attempt == max_retries - 1:
                     action = Action(
                         "I encountered an error producing a thought",
                         "error",
                         ""
                     )
-            
+
         res_actions = state["actions"]
         res_actions.append(action)
         return {"actions": res_actions, "action_counter": 1, "total_action_counter": 1}
@@ -409,12 +436,12 @@ class DatatalkParser(BaseParser):
         # populate dictionary with substrings to substitute exactly with value in post-processing
         # for now, this is just the results of entity_linking
         substitution_dict = state["entity_linking_results"]
-        current_action.postprocessed_action_argument = await postprocess_entities(current_action.action_argument, substitution_dict)
+        current_action.postprocessed_action_argument = await postprocess_entities(current_action.action_argument,
+                                                                                  substitution_dict)
         sql = await DatatalkParser.sql_chain(current_action.postprocessed_action_argument, state)
         current_action.postprocessed_action_argument = (
             sql.sql
-        ) # update it with the cleaned and optimized SQL
-
+        )  # update it with the cleaned and optimized SQL
 
         if sql.has_results():
             current_action.observation = sql.execution_result_sample
@@ -430,7 +457,7 @@ class DatatalkParser(BaseParser):
                            for a in previous):
                 state["actions"][-1].observation = REPEATED_ACTION_OBSERVATION
             return state
-        
+
         current_action = DatatalkParser.get_current_action(state)
         if current_action.action_name == "execute_sql":
             state = check_sql_in_last_turns(current_action, state)
@@ -466,26 +493,26 @@ class DatatalkParser(BaseParser):
                     return "Invalid input format - the input to entity_linking must be formatted as a Python tuple (enclosed in () parenthesis)", 1
                 if len(parsed_tuple) != 2:
                     return "Invalid input format - the tuple input to entity_linking must contain two arguments - a search string and a list of columns.", 1
-                
+
                 search_str, entity_table_nm = parsed_tuple
-                
+
                 # Remove quotes from search_str if they are present at both ends
                 if (search_str.startswith("'") and search_str.endswith("'")) or \
-                   (search_str.startswith('"') and search_str.endswith('"')):
+                        (search_str.startswith('"') and search_str.endswith('"')):
                     search_str = search_str[1:-1]
-                
+
             except Exception:
                 return "Invalid input format - the input to entity_linking must be formatted as a Python tuple, but some other format was provided.", 1
-            
+
             ### Now we have a Tuple input ###
             # Validate search string
             if not isinstance(search_str, str):
                 return "Invalid input format - the first argument to entity_linking must be a single Python string.", 1
-                
+
             # Validate col_name_lst
             if not isinstance(entity_table_nm, str):
                 return "Invalid input format - the second argument to entity_linking must be a single Python string.", 1
-         
+
             return (search_str, entity_table_nm), 0
 
         def entity_list_to_filtering_set(entity_list, entity_table_nm, search_str):
@@ -494,12 +521,12 @@ class DatatalkParser(BaseParser):
             var_name = var_name.replace("'", "")
             var_name = var_name.replace('"', "")
             var_name = var_name.replace('-', "")
-            entity_set_str = ["'" + ent.replace("'", "''") + "'" for ent in entity_list]  # Escape apotrophe/quotes and encase in single-quote
+            entity_set_str = ["'" + ent.replace("'", "''") + "'" for ent in
+                entity_list]  # Escape apotrophe/quotes and encase in single-quote
             if not entity_set_str:
                 return var_name, None
             entity_set_str = f"({', '.join(entity_set_str)})"
             return var_name, entity_set_str
-
 
         # For simplicity + compatibility with pervious code, LLM is supplying 1 string argument that is post-processed here
         parse_res, parse_error = parse_entity_linking_args(raw_arg)
@@ -518,7 +545,7 @@ class DatatalkParser(BaseParser):
             if type(ent_lst) is str:
                 current_action.observation = ent_lst
                 return
-            
+
             result = ""
             var_name, var_entities = entity_list_to_filtering_set(ent_lst, entity_table_nm, search_str)
             if var_entities is None:
@@ -530,15 +557,14 @@ class DatatalkParser(BaseParser):
 
         current_action.observation = result
 
-    
     @staticmethod
     async def location_linking(state):
         current_action = DatatalkParser.get_current_action(state)
         assert current_action.action_name == "location_linking"
 
-        raw_arg = current_action.action_argument        
+        raw_arg = current_action.action_argument
         try:
-        # Check if raw_arg is already a list
+            # Check if raw_arg is already a list
             if isinstance(raw_arg, list):
                 loc_lst = raw_arg
             else:
@@ -562,7 +588,6 @@ class DatatalkParser(BaseParser):
         # For front-end to clearly indicate the action
         current_action.action_argument = f"location_linking({str(loc_lst)})"
 
-    
     @staticmethod
     async def retrieve_tables_details(state):
         current_action = DatatalkParser.get_current_action(state)
@@ -572,7 +597,6 @@ class DatatalkParser(BaseParser):
             state["table_schemas"],
         )
         current_action.observation = format_table_schema(action_results)
-        
 
     @staticmethod
     async def verify_domain_specific_instructions(state):
@@ -580,11 +604,11 @@ class DatatalkParser(BaseParser):
         Verify that all domain-specific instructions have been adhered to.
         """
         include_observation_actions = ['entity_linking', 'location_linking']
-        
+
         if not state["generated_sqls"]:
             # no generated sql exists. no need to verify anything
             return {"verify_domain_specific_instructions_counter": 3}
-        
+
         # Get the last non-postprocessed generated SQL to pass into verifier
         sql = next(
             (act.action_argument for act in reversed(state["actions"]) if act.action_name == 'execute_sql'),
@@ -618,7 +642,11 @@ class DatatalkParser(BaseParser):
             get_llm(),
             langfuse_readonly=state["langfuse_readonly"],
         )
-        
+
+        if action is None:
+            # verifier call failed (e.g. content filter): keep the SQL already produced and stop verifying
+            return {"verify_domain_specific_instructions_counter": 3, "final_sql": sql}
+
         if action.action_name == "reexecute_sql":
             thought = action.thought
             action_name = "execute_sql"
@@ -633,7 +661,7 @@ class DatatalkParser(BaseParser):
             res_actions = state["actions"][:-2]
             res_actions.append(action)
             return {"actions": res_actions, "verify_domain_specific_instructions_counter": 1}
-        
+
         else:
             # logger.info("verify_domain_specific_instructions: Finished run for question %s", state["question"])
             action = Action(
@@ -649,7 +677,7 @@ class DatatalkParser(BaseParser):
     async def execute_python_from_sql(state):
         current_action = DatatalkParser.get_current_action(state)
         assert current_action.action_name == "execute_python_from_sql"
-        
+
         def parse_execute_python_from_sql_args(raw_arg):
             try:
                 if isinstance(raw_arg, str):
@@ -663,20 +691,20 @@ class DatatalkParser(BaseParser):
                     return "Invalid input format - the input to execute_python_from_sql must be formatted as a Python tuple (enclosed in () parenthesis)", 1
                 if len(parsed_tuple) != 2:
                     return "Invalid input format - the tuple input to execute_python_from_sql must contain two arguments - a SQL query and a Python code.", 1
-                
+
                 sql, python_code = parsed_tuple
-                
+
             except Exception:
                 return "Invalid input format - the input to entity_linking must be formatted as a Python tuple, but some other format was provided.", 1
-            
+
             if not isinstance(sql, str):
                 return "Invalid input format - the first argument to execute_python_from_sql must be a single Python string.", 1
-                
+
             if not isinstance(python_code, str):
                 return "Invalid input format - the second argument to execute_python_from_sql must be a single Python string.", 1
-         
+
             return (sql, python_code), 0
-        
+
         parse_res, parse_error = parse_execute_python_from_sql_args(current_action.action_argument)
 
         if parse_error:
@@ -687,11 +715,12 @@ class DatatalkParser(BaseParser):
         else:
             sql, python_code = parse_res
             substitution_dict = state["entity_linking_results"]
-            current_action.postprocessed_action_argument = await postprocess_entities(current_action.action_argument, substitution_dict)
+            current_action.postprocessed_action_argument = await postprocess_entities(current_action.action_argument,
+                                                                                      substitution_dict)
             sql = await DatatalkParser.sql_chain(sql, state)
             result = execute_python_from_sql_results(sql.get_results_dataframe(), python_code)
             cleaned, images_b64s = parse_execute_python_from_sql_output(result)
-        
+
             current_action.observation = cleaned
             current_action.images_b64s = images_b64s
             current_action.postprocessed_action_argument = f"""sql_results = execute_sql("{sql.sql}")\n\n{python_code}"""
