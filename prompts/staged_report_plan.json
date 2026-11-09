@@ -1,6 +1,6 @@
 {
   "name": "staged_report_plan",
-  "version": 2,
+  "version": 1,
   "type": "text",
   "labels": [
     "production",

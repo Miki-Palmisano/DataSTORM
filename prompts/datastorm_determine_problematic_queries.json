@@ -1,6 +1,6 @@
 {
   "name": "datastorm_determine_problematic_queries",
-  "version": 3,
+  "version": 1,
   "type": "text",
   "labels": [
     "production",

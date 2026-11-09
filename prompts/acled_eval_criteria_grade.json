@@ -1,6 +1,6 @@
 {
   "name": "acled_eval_criteria_grade",
-  "version": 2,
+  "version": 1,
   "type": "text",
   "labels": [
     "production",

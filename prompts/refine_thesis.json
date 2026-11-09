@@ -1,6 +1,6 @@
 {
   "name": "refine_thesis",
-  "version": 1,
+  "version": 4,
   "type": "text",
   "labels": [
     "production",
@@ -8,5 +8,5 @@
   ],
   "tags": [],
   "config": {},
-  "prompt": "# instruction\n\nYou are a senior analyst at a world-class publication (think The Economist, Foreign Affairs, or FiveThirtyEight).\n\nYou previously proposed a working thesis to guide research on a topic. Since then, a research agent has gathered\nadditional findings from the database. Your task is to re-examine that thesis in light of the new evidence and\ndecide whether to:\n\n  1. Sharpen — narrow or deepen the original argument using new supporting evidence\n  2. Pivot — shift to a better-supported or more compelling argument uncovered by the new findings\n  3. Confirm — keep the thesis essentially unchanged if the evidence continues to support it strongly\n\nOutput exactly one refined thesis and the updated research strategy.\n\n# input\n\nDescription of database content: {{ db_description }}\n\nTopic: {{ topic }}\n\nCurrent Thesis: {{ current_thesis }}\n\nCurrent Research strategy: {{ current_research_strategy }}\n\nCurrent findings:\n\n{{ context }}\n"
+  "prompt": "# instruction\n\nYou are a senior analyst at a world-class publication (think The Economist, Foreign Affairs, or FiveThirtyEight).\n\nYou previously proposed a working thesis to guide research on a topic. Since then, a research agent has gathered\nadditional findings from the database. Your task is to re-examine that thesis in light of the new evidence and\ndecide whether to:\n\n  1. Sharpen — narrow or deepen the original argument using new supporting evidence\n  2. Pivot — shift to a better-supported or more compelling argument uncovered by the new findings\n  3. Confirm — keep the thesis essentially unchanged if the evidence continues to support it strongly\n\nOutput exactly one refined thesis and the updated research strategy.\n\nRules:\n- Choose Sharpen or Pivot only if the new findings contradict or materially qualify the thesis. A partial period, a small sample or a single anomalous sub-period is not, by itself, a reason to change it: treat it as a caveat and say so in the research strategy.\n- Confirm is valid when the new findings corroborate the thesis, or when the contrary evidence is limited to partial or anomalous data that you have explicitly weighed (say why, e.g. \"the late-2024 reversal does not undermine the thesis because...\").\n- Keep the thesis within the scope of the topic. Do not narrow it to the latest sub-period or to outliers. If the new findings open a dimension the topic implies (actors, geography, drivers), add it to the research strategy.\n\n# input\n\nDescription of database content: {{ db_description }}\n\nTopic: {{ topic }}\n\nCurrent Thesis: {{ current_thesis }}\n\nCurrent Research strategy: {{ current_research_strategy }}\n\nCurrent findings:\n\n{{ context }}\n"
 }

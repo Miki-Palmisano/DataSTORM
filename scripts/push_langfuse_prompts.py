@@ -14,6 +14,8 @@ Usage:
 """
 
 from __future__ import annotations
+import os
+import tomllib
 
 import argparse
 import json
@@ -27,12 +29,21 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from coding_agent_baselines.codex_baseline.run_acled_evaluations_codex import load_eval_credentials  # noqa: E402
+# Carica automaticamente le credenziali da secrets.toml
+SECRETS_FILE = REPO_ROOT / "secrets.toml"
 
-load_eval_credentials()
+with SECRETS_FILE.open("rb") as f:
+    secrets = tomllib.load(f)
 
-from langfuse import get_client  # noqa: E402
+for key in [
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_HOST"
+]:
+    if not os.environ.get(key) and secrets.get(key):
+        os.environ[key] = str(secrets[key])
 
+from langfuse import get_client
 
 def get_langfuse_client():
     return get_client()
