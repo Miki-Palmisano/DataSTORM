@@ -527,6 +527,7 @@ async def run_article_critique_phase(
     langfuse_readonly: bool,
     max_questions: int = 5,
     disable_upload_to_azure: bool = False,
+    serper_query_params: Optional[dict] = None,
 ) -> dict:
     """Run a post-generation critique phase on the article.
 
@@ -575,6 +576,7 @@ async def run_article_critique_phase(
                 # raise in DatatalkRM._build_url discards the already-computed
                 # answer, silently dropping every critique question.
                 disable_upload_to_azure=disable_upload_to_azure,
+                serper_search_params=serper_query_params
             )
 
             _tree_sim = critique_runner.storm_knowledge_curation_module.conv_simulator
@@ -676,6 +678,7 @@ async def run_critique_from_dir(run_dir: str, langfuse_readonly: bool = False) -
         # Recorded by the original run; without it the critique RM would try to
         # upload and drop every question when the upload fails.
         disable_upload_to_azure=meta.get("disable_upload_to_azure", False),
+        serper_query_params=meta.get("serper_query_params"),
     )
     out_path = os.path.join(run_dir, "article_critique.json")
     with open(out_path, "w", encoding="utf-8") as f:
@@ -716,6 +719,7 @@ async def datastorm_after_warmstart(
     include_summary_stats: bool = True,
     datatalk_engine: str = None,
     datastorm_main_model: str = "gpt-5",
+    serper_query_params: Optional[dict] = None,
 ):
     if not db_description:
         if domain in db_description_mapping:
@@ -759,6 +763,7 @@ async def datastorm_after_warmstart(
         include_summary_stats=include_summary_stats,
         datatalk_engine=datatalk_engine,
         datastorm_main_model=datastorm_main_model,
+        serper_search_params=serper_query_params,
     )
 
     # Inject warmstart internet evidence as context for thesis generation
@@ -945,6 +950,7 @@ async def datastorm_after_warmstart(
             db_description=db_description or "",
             langfuse_readonly=langfuse_readonly,
             disable_upload_to_azure=disable_upload_to_azure,
+            serper_query_params=serper_query_params,
         )
         with open(os.path.join(dir_tree, "article_critique.json"), "w", encoding="utf-8") as f:
             json.dump({k: v for k, v in critique_result.items() if k != "revised_article"}, f, indent=2, ensure_ascii=False)
@@ -1021,10 +1027,9 @@ async def process_generation(
         serper_query_params=serper_query_params
     )
     
-    empty_start = False
+    empty_start = no_warm_start
     if not no_warm_start:
         costorm_runner.warm_start()
-        empty_start = True
     
     run_output_dir = await datastorm_after_warmstart(
         topic,
@@ -1052,6 +1057,7 @@ async def process_generation(
         include_summary_stats=include_summary_stats,
         datatalk_engine=datatalk_engine,
         datastorm_main_model=datastorm_main_model,
+        serper_query_params=serper_query_params,
     )
     
     # Record run metadata inside the final artifact directory.
