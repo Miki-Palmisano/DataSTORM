@@ -406,7 +406,7 @@ db_description_mapping = {
         "- inter1, inter2 (text): actor type (State forces, Rebel group, Political militia, Identity militia, "
         "Rioters, Protesters, Civilians, External/Other forces)\n"
         "- interaction (text): combination of inter1 and inter2, independent of their order\n"
-        "- civilian_targeting (text): 'Civilians targeted' or blank. Marks events where civilians were the "
+        "- civilian_targeting (text): 'Civilians targeting' or blank. Marks events where civilians were the "
         "main or only target, including some Explosions/Remote violence, Riots and Excessive force against "
         "protesters events, not only Violence against civilians. Incidental harm is not included\n"
         "- iso (int): ISO 3166 numeric country code\n"
